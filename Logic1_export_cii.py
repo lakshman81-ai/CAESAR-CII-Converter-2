@@ -229,11 +229,14 @@ class CaesarExporter:
 
     def _fv(self, val, width: int = 13) -> str:
         """Format a value from ACCDB row dict (float or sentinel)."""
+        _auto_str = config.get_sentinel_str()
+        _auto_f = config.get_sentinel_float()
+
         try:
             f = float(val)
             # Use a tiny tolerance for floating point comparisons
-            if abs(f - _AUTO_F) < 0.0001 or abs(f - (-1.01010000705719)) < 0.0001:
-                return _AUTO
+            if abs(f - _auto_f) < 0.0001 or abs(f - (-1.01010000705719)) < 0.0001:
+                return _auto_str
             return self.fmt_val(f, width)
         except Exception:
             return "     0.000000"
@@ -244,8 +247,9 @@ class CaesarExporter:
         Generates a .CII file from e_dicts (ACCDB-format row dicts).
         Returns the CII text; also writes to out_file if given.
         """
+        _auto_f = config.get_sentinel_float()
         zero13 = "     0.000000"
-        auto13 = self.fmt_val(_AUTO_F, 13)
+        auto13 = self.fmt_val(_auto_f, 13)
 
         out = ""
 

@@ -18,9 +18,6 @@ def get_sentinel_str():
     val = get_sentinel_float()
     return f" {val}d0"
 
-CAESAR_AUTO_CALC_FLOAT = get_sentinel_float()
-CAESAR_AUTO_CALC_STR   = get_sentinel_str()
-
 INDEX_TEMPERATURE_START = 19
 INDEX_TEMPERATURE_END   = 27
 INDEX_PRESSURE_START    = 28
