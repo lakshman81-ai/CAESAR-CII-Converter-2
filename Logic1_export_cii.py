@@ -20,9 +20,9 @@ from Logic1_logger import get_logger
 
 logger = get_logger("Logic1_export_cii")
 
-# ── CAESAR II -1.0101 sentinel ────────────────────────────────────────────────
-_AUTO = config.CAESAR_AUTO_CALC_STR   # " -1.0101d0"
-_AUTO_F = config.CAESAR_AUTO_CALC_FLOAT  # -1.0101
+# ── CAESAR II auto sentinel ────────────────────────────────────────────────
+_AUTO = config.get_sentinel_str()
+_AUTO_F = config.get_sentinel_float()
 
 # ── Universal aux_data record templates (correct line-count per type) ─────────
 # Matches Logic2_importer._AUX_TEMPLATES
@@ -209,8 +209,8 @@ class CaesarExporter:
 
     # ── Float formatter ───────────────────────────────────────────────────────
     def fmt_val(self, val_str, width: int) -> str:
-        if str(val_str).strip() in ('-1.01010000705719', _AUTO.strip(), '-1.0101'):
-            val_str = '-1.0101'
+        if str(val_str).strip() in ('-1.01010000705719', _AUTO.strip(), '-1.0101', str(_AUTO_F)):
+            val_str = str(_AUTO_F)
         try:
             val_float = float(val_str)
             s = str(val_str)
@@ -231,7 +231,8 @@ class CaesarExporter:
         """Format a value from ACCDB row dict (float or sentinel)."""
         try:
             f = float(val)
-            if f in (_AUTO_F, -1.01010000705719):
+            # Use a tiny tolerance for floating point comparisons
+            if abs(f - _AUTO_F) < 0.0001 or abs(f - (-1.01010000705719)) < 0.0001:
                 return _AUTO
             return self.fmt_val(f, width)
         except Exception:
@@ -244,7 +245,7 @@ class CaesarExporter:
         Returns the CII text; also writes to out_file if given.
         """
         zero13 = "     0.000000"
-        auto13 = "    -1.010100"
+        auto13 = self.fmt_val(_AUTO_F, 13)
 
         out = ""
 

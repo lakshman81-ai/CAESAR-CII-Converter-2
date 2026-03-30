@@ -21,6 +21,70 @@
             defaultTable: 'INPUT_BASIC_ELEMENT_DATA'
         };
 
+        window.CSVAdapter = {
+            parse(text) {
+                const lines = text.split(/\r?\n/).filter(l => l.trim() !== '');
+                if (lines.length < 2) return [];
+
+                // Extremely simple RFC4180 parsing for handling quoted fields
+                const parseLine = (line) => {
+                    const result = [];
+                    let start = 0;
+                    let inQuotes = false;
+                    for (let i = 0; i < line.length; i++) {
+                        if (line[i] === '"') {
+                            inQuotes = !inQuotes;
+                        } else if (line[i] === ',' && !inQuotes) {
+                            result.push(line.substring(start, i));
+                            start = i + 1;
+                        }
+                    }
+                    result.push(line.substring(start));
+                    return result.map(c => {
+                        let val = c.trim();
+                        if (val.startsWith('"') && val.endsWith('"')) {
+                            val = val.substring(1, val.length - 1).replace(/""/g, '"');
+                        }
+                        return val;
+                    });
+                };
+
+                const headers = parseLine(lines[0]);
+                const data = [];
+                for (let i = 1; i < lines.length; i++) {
+                    const row = parseLine(lines[i]);
+                    const obj = {};
+                    for (let j = 0; j < headers.length; j++) {
+                        obj[headers[j]] = row[j] !== undefined ? row[j] : '';
+                    }
+                    data.push(obj);
+                }
+                return data;
+            }
+        };
+
+        window.AppState = {
+            logic1: {
+                elemRows: null,
+                inputFilename: null
+            },
+            logic2: {
+                tableRows: null,
+                baseCiiText: null,
+                inputFilename: null
+            },
+            logic3: {},
+            logic4: {
+                elemRows: null,
+                bendRows: null,
+                restRows: null,
+                rigidRows: null,
+                sifRows: null,
+                baseCiiText: null,
+                inputFilename: null
+            }
+        };
+
         window.AccessAdapter = {
             // Memory trail for diagnostics
             _diagnostics: [],
@@ -339,6 +403,12 @@
                 <h3 class="text-sm font-semibold mb-3 text-gray-700">Logic 1 Settings</h3>
                 <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-5">
                     <div>
+                        <label class="block text-xs font-semibold text-gray-600 mb-1">CAESAR II Auto-Calc Sentinel</label>
+                        <input type="number" id="l1-setting-sentinel" step="0.0001" value="-1.0101"
+                               class="w-full border border-gray-300 p-1.5 rounded text-sm bg-white">
+                        <p class="text-xs text-gray-400 mt-0.5">Value CAESAR uses to flag auto-calculated records.</p>
+                    </div>
+                    <div>
                         <label class="block text-xs font-semibold text-gray-600 mb-1">DOS Newlines (CRLF)</label>
                         <select id="l1-setting-crlf" class="w-full border border-gray-300 p-1.5 rounded text-sm bg-white">
                             <option value="true" selected>Yes &mdash; Windows/CAESAR II standard</option>
@@ -473,6 +543,12 @@
                         <input type="number" id="l2-setting-n1" value="2000" min="100" max="9999"
                                class="w-full border border-gray-300 p-1.5 rounded text-sm bg-white">
                         <p class="text-xs text-gray-400 mt-0.5">CIIParser N1 parameter (default: 2000)</p>
+                    </div>
+                    <div>
+                        <label class="block text-xs font-semibold text-gray-600 mb-1">CAESAR II Auto-Calc Sentinel</label>
+                        <input type="number" id="l2-setting-sentinel" step="0.0001" value="-1.0101"
+                               class="w-full border border-gray-300 p-1.5 rounded text-sm bg-white">
+                        <p class="text-xs text-gray-400 mt-0.5">Value CAESAR uses to flag auto-calculated records.</p>
                     </div>
                     <div>
                         <label class="block text-xs font-semibold text-gray-600 mb-1">DOS Newlines (CRLF)</label>
@@ -728,6 +804,12 @@
             <div id="l4-settings" class="l4-panel hidden border border-gray-200 rounded-lg p-5 bg-gray-50">
                 <h3 class="text-sm font-semibold mb-3 text-gray-700">Logic 4 Settings</h3>
                 <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-5">
+                    <div>
+                        <label class="block text-xs font-semibold text-gray-600 mb-1">CAESAR II Auto-Calc Sentinel</label>
+                        <input type="number" id="l4-setting-sentinel" step="0.0001" value="-1.0101"
+                               class="w-full border border-gray-300 p-1.5 rounded text-sm bg-white">
+                        <p class="text-xs text-gray-400 mt-0.5">Value CAESAR uses to flag auto-calculated records.</p>
+                    </div>
                     <div>
                         <label class="block text-xs font-semibold text-gray-600 mb-1">Parser N1 Base</label>
                         <input type="number" id="l4-setting-n1" value="2000" min="100" max="9999"
@@ -986,7 +1068,6 @@ function switchSubTab(prefix, panel) {
 // ----- Logic 3 globals -----
 let _l3_fileBuffer = null;   // ArrayBuffer of last loaded ACCDB
 let _l3_csvText   = null;   // CSV text (from CSV input or extracted from ACCDB)
-let _l3_tableRows = null;   // Array of row objects for Logic3_generateFinal
 
 function _l3_log(msg) {
     // Append to main log panel and the inline status spans
@@ -1007,19 +1088,7 @@ function _l3_setStatus(panel, msg) {
 
 // Parse plain CSV text → array of objects
 function _l3_parseCSV(text) {
-    const lines = text.split(/\r?\n/).filter(l => l.trim() !== '');
-    if (lines.length < 2) return [];
-    const headers = lines[0].split(',').map(h => h.trim().replace(/^"|"$/g, ''));
-    const data = [];
-    for (let i = 1; i < lines.length; i++) {
-        const row = lines[i].split(',').map(c => c.trim().replace(/^"|"$/g, ''));
-        const obj = {};
-        for (let j = 0; j < headers.length; j++) {
-            obj[headers[j]] = row[j] !== undefined ? row[j] : '';
-        }
-        data.push(obj);
-    }
-    return data;
+    return window.CSVAdapter.parse(text);
 }
 
 // Convert array of objects → CSV string
@@ -1055,7 +1124,7 @@ function _l3_downloadText(text, filename, mime) {
 async function _l3_onFileChange(event) {
     _l3_fileBuffer = null;
     _l3_csvText    = null;
-    _l3_tableRows  = null;
+    window.AppState.logic3.tableRows = null;
 
     const file = event.target.files[0];
     if (!file) return;
@@ -1088,8 +1157,8 @@ async function _l3_onFileChange(event) {
     } else if (name.endsWith('.csv')) {
         _l3_log('CSV file selected: ' + file.name);
         _l3_csvText = await file.text();
-        _l3_tableRows = _l3_parseCSV(_l3_csvText);
-        _l3_log('CSV loaded: ' + _l3_tableRows.length + ' row(s).');
+        window.AppState.logic3.tableRows = _l3_parseCSV(_l3_csvText);
+        _l3_log('CSV loaded: ' + window.AppState.logic3.tableRows.length + ' row(s).');
         tableSelector.classList.add('hidden');
     }
 }
@@ -1121,6 +1190,7 @@ async function _l3_convert() {
                 _l3_setStatus('processing', msg);
                 _l3_log(`Logic 3 Status: ${msg}`);
             });
+            window.AppState.logic3.tableRows = rows;
             _l3_log('Extracted ' + rows.length + ' row(s) from table "' + tableName + '".');
         } catch (e) {
             _l3_log('ERROR: ' + e.message);
@@ -1128,11 +1198,11 @@ async function _l3_convert() {
             return;
         }
     } else if (name.endsWith('.csv')) {
-        if (!_l3_tableRows) {
+        if (!window.AppState.logic3.tableRows) {
             _l3_log('ERROR: CSV not loaded. Re-select the file.');
             return;
         }
-        rows = _l3_tableRows;
+        rows = window.AppState.logic3.tableRows;
     } else {
         _l3_log('ERROR: Unsupported file type.');
         return;
@@ -1192,7 +1262,7 @@ async function _l3_exportIntermediate() {
         }
     } else if (name.endsWith('.csv')) {
         csvOut   = _l3_csvText || '';
-        rowCount = (_l3_tableRows || []).length;
+    rowCount = (window.AppState.logic3.tableRows || []).length;
     }
 
     if (!csvOut) {
@@ -1226,8 +1296,6 @@ function _l3_applySettings() {
 // ================================================================
 let _l2_fileBuffer = null;
 let _l2_csvText    = null;
-let _l2_tableRows  = null;   // exposed to PyScript via window._l2_tableRows
-let _l2_baseCiiText = null;  // exposed to PyScript via window._l2_baseCiiText
 
 function _l2_log(msg) {
     const logEl = document.getElementById('status-logs');
@@ -1248,8 +1316,7 @@ function _l2_setStatus(panel, msg) {
 async function _l2_onFileChange(event) {
     _l2_fileBuffer = null;
     _l2_csvText    = null;
-    _l2_tableRows  = null;
-    window._l2_tableRows = null;
+    window.AppState.logic2.tableRows = null;
 
     const file = event.target.files[0];
     if (!file) return;
@@ -1282,31 +1349,21 @@ async function _l2_onFileChange(event) {
     } else if (name.endsWith('.csv')) {
         _l2_log('Logic 2: CSV file selected: ' + file.name);
         _l2_csvText = await file.text();
-        // Parse CSV into array of objects for PyScript
-        const lines = _l2_csvText.split(/\r?\n/).filter(l => l.trim() !== '');
-        if (lines.length >= 2) {
-            const headers = lines[0].split(',').map(h => h.trim().replace(/^"|"$/g, ''));
-            _l2_tableRows = [];
-            for (let i = 1; i < lines.length; i++) {
-                const vals = lines[i].split(',').map(c => c.trim().replace(/^"|"$/g, ''));
-                const obj = {};
-                headers.forEach((h, j) => { obj[h] = vals[j] !== undefined ? vals[j] : ''; });
-                _l2_tableRows.push(obj);
-            }
-            window._l2_tableRows = _l2_tableRows;
-            _l2_log('Logic 2: CSV loaded: ' + _l2_tableRows.length + ' row(s).');
+        const rows = window.CSVAdapter.parse(_l2_csvText);
+        if (rows.length > 0) {
+            window.AppState.logic2.tableRows = rows;
+            window.AppState.logic2.inputFilename = file.name;
+            _l2_log('Logic 2: CSV loaded: ' + rows.length + ' row(s).');
         }
         tableSelector.classList.add('hidden');
     }
 }
 
 async function _l2_onCiiChange(event) {
-    _l2_baseCiiText = null;
-    window._l2_baseCiiText = null;
+    window.AppState.logic2.baseCiiText = null;
     const file = event.target.files[0];
     if (!file) return;
-    _l2_baseCiiText = await file.text();
-    window._l2_baseCiiText = _l2_baseCiiText;
+    window.AppState.logic2.baseCiiText = await file.text();
     _l2_log('Logic 2: Base CII loaded: ' + file.name);
 }
 
@@ -1336,10 +1393,9 @@ async function _l2_onConvertClick() {
                 _l2_setStatus('processing', msg);
                 _l2_log(`Logic 2 Status: ${msg}`);
             });
-            _l2_tableRows = results;
-            window._l2_tableRows = _l2_tableRows;
-            window._l2_inputFilename = file.name;
-            _l2_log('Logic 2: Extracted ' + _l2_tableRows.length + ' row(s) from "' + tableName + '".');
+            window.AppState.logic2.tableRows = results;
+            window.AppState.logic2.inputFilename = file.name;
+            _l2_log('Logic 2: Extracted ' + results.length + ' row(s) from "' + tableName + '".');
         } catch (e) {
             _l2_log('Logic 2 ERROR: ' + e.message);
             _l2_setStatus('processing', 'Failed: ' + e.message);
@@ -1371,9 +1427,6 @@ function _l2_onApplySettingsClick() {
 // ================================================================
 let _l1_fileBuffer = null;
 let _l1_csvText    = null;
-let _l1_tableRows  = null;  // INPUT_BASIC_ELEMENT_DATA rows (dicts)
-window._l1_elemRows  = null;
-window._l1_inputFilename = null;
 
 function _l1_log(msg) {
     const logEl = document.getElementById('status-logs');
@@ -1392,8 +1445,8 @@ function _l1_setStatus(panel, msg) {
 }
 
 async function _l1_onFileChange(event) {
-    _l1_fileBuffer = null; _l1_csvText = null; _l1_tableRows = null;
-    window._l1_elemRows = null;
+    _l1_fileBuffer = null; _l1_csvText = null;
+    window.AppState.logic1.elemRows = null;
     const file = event.target.files[0];
     if (!file) return;
     const name = file.name.toLowerCase();
@@ -1406,38 +1459,29 @@ async function _l1_onFileChange(event) {
                 if (statusEl) { statusEl.textContent = `Status: ${msg}`; statusEl.classList.remove('hidden'); }
                 _l1_log(`Logic 1 Status: ${msg}`);
             });
-            _l1_tableRows = results;
-            window._l1_elemRows = _l1_tableRows;
-            window._l1_inputFilename = file.name;
-            if (statusEl) { statusEl.textContent = 'ACCDB loaded: ' + _l1_tableRows.length + ' elements'; statusEl.classList.remove('hidden'); }
-            _l1_log('Logic 1: Loaded ' + _l1_tableRows.length + ' elements from ' + file.name);
+            window.AppState.logic1.elemRows = results;
+            window.AppState.logic1.inputFilename = file.name;
+            if (statusEl) { statusEl.textContent = 'ACCDB loaded: ' + results.length + ' elements'; statusEl.classList.remove('hidden'); }
+            _l1_log('Logic 1: Loaded ' + results.length + ' elements from ' + file.name);
         } catch(e) {
             _l1_log('Logic 1 ERROR: ' + e.message);
             if (statusEl) { statusEl.textContent = 'Error: ' + e.message; statusEl.classList.remove('hidden'); }
         }
     } else if (name.endsWith('.csv')) {
         _l1_csvText = await file.text();
-        const lines = _l1_csvText.split(/\r?\n/).filter(l => l.trim());
-        if (lines.length >= 2) {
-            const headers = lines[0].split(',').map(h => h.trim().replace(/^"|"$/g, ''));
-            _l1_tableRows = [];
-            for (let i = 1; i < lines.length; i++) {
-                const vals = lines[i].split(',').map(c => c.trim().replace(/^"|"$/g, ''));
-                const obj = {};
-                headers.forEach((h, j) => { obj[h] = vals[j] !== undefined ? vals[j] : ''; });
-                _l1_tableRows.push(obj);
-            }
-            window._l1_elemRows = _l1_tableRows;
-            window._l1_inputFilename = file.name;
-            if (statusEl) { statusEl.textContent = 'Universal CSV loaded: ' + _l1_tableRows.length + ' rows'; statusEl.classList.remove('hidden'); }
-            _l1_log('Logic 1: Universal CSV loaded - ' + _l1_tableRows.length + ' rows');
+        const rows = window.CSVAdapter.parse(_l1_csvText);
+        if (rows.length > 0) {
+            window.AppState.logic1.elemRows = rows;
+            window.AppState.logic1.inputFilename = file.name;
+            if (statusEl) { statusEl.textContent = 'Universal CSV loaded: ' + rows.length + ' rows'; statusEl.classList.remove('hidden'); }
+            _l1_log('Logic 1: Universal CSV loaded - ' + rows.length + ' rows');
         }
     }
 }
 
 async function _l1_onConvertClick() {
     _l1_setStatus('processing', '');
-    if (!window._l1_elemRows) { _l1_log('Logic 1 ERROR: No file loaded.'); return; }
+    if (!window.AppState.logic1.elemRows) { _l1_log('Logic 1 ERROR: No file loaded.'); return; }
     document.dispatchEvent(new CustomEvent('l1-convert'));
 }
 
@@ -1455,20 +1499,13 @@ function _l1_onApplySettingsClick() {
 // ================================================================
 let _l4_fileBuffer = null;
 let _l4_csvText    = null;
-window._l4_elemRows  = null;
-window._l4_bendRows  = null;
-window._l4_restRows  = null;
-window._l4_rigidRows = null;
-window._l4_sifRows   = null;
-window._l4_baseCiiText = null;
-window._l4_inputFilename = null;
 
 const L4_TABLES = [
-    ['INPUT_BASIC_ELEMENT_DATA', '_l4_elemRows'],
-    ['INPUT_BENDS',              '_l4_bendRows'],
-    ['INPUT_RESTRAINTS',         '_l4_restRows'],
-    ['INPUT_RIGIDS',             '_l4_rigidRows'],
-    ['INPUT_SIFTEES',            '_l4_sifRows'],
+    ['INPUT_BASIC_ELEMENT_DATA', 'elemRows'],
+    ['INPUT_BENDS',              'bendRows'],
+    ['INPUT_RESTRAINTS',         'restRows'],
+    ['INPUT_RIGIDS',             'rigidRows'],
+    ['INPUT_SIFTEES',            'sifRows'],
 ];
 
 function _l4_log(msg) {
@@ -1489,7 +1526,7 @@ function _l4_setStatus(panel, msg) {
 
 async function _l4_onFileChange(event) {
     // Reset all table globals
-    L4_TABLES.forEach(([, wk]) => { window[wk] = null; });
+    L4_TABLES.forEach(([, wk]) => { window.AppState.logic4[wk] = null; });
     _l4_fileBuffer = null; _l4_csvText = null;
 
     const file = event.target.files[0];
@@ -1508,10 +1545,10 @@ async function _l4_onFileChange(event) {
             const counts = {};
             for (const [tbl, wk] of L4_TABLES) {
                 const rows = results[tbl] || [];
-                window[wk] = rows;
+                window.AppState.logic4[wk] = rows;
                 counts[tbl] = rows.length;
             }
-            window._l4_inputFilename = file.name;
+            window.AppState.logic4.inputFilename = file.name;
             const statusText = [
                 'Elements: ' + (counts['INPUT_BASIC_ELEMENT_DATA'] || 0),
                 'Bends: '    + (counts['INPUT_BENDS'] || 0),
@@ -1528,18 +1565,10 @@ async function _l4_onFileChange(event) {
 
     } else if (name.endsWith('.csv')) {
         _l4_csvText = await file.text();
-        const lines = _l4_csvText.split(/\r?\n/).filter(l => l.trim());
-        if (lines.length >= 2) {
-            const headers = lines[0].split(',').map(h => h.trim().replace(/^"|"$/g, ''));
-            const rows = [];
-            for (let i = 1; i < lines.length; i++) {
-                const vals = lines[i].split(',').map(c => c.trim().replace(/^"|"$/g, ''));
-                const obj = {};
-                headers.forEach((h, j) => { obj[h] = vals[j] !== undefined ? vals[j] : ''; });
-                rows.push(obj);
-            }
-            window._l4_elemRows = rows;  // universal CSV — pipeline.py reconstructs aux from BND_/RST_/etc
-            window._l4_inputFilename = file.name;
+        const rows = window.CSVAdapter.parse(_l4_csvText);
+        if (rows.length > 0) {
+            window.AppState.logic4.elemRows = rows;  // universal CSV — pipeline.py reconstructs aux from BND_/RST_/etc
+            window.AppState.logic4.inputFilename = file.name;
             if (statusEl) { statusEl.textContent = 'Universal CSV: ' + rows.length + ' rows (aux rows will be reconstructed from BND_/RST_/RGD_/SIF_ columns)'; statusEl.classList.remove('hidden'); }
             _l4_log('Logic 4: Universal CSV loaded — ' + rows.length + ' rows');
         }
@@ -1547,16 +1576,16 @@ async function _l4_onFileChange(event) {
 }
 
 async function _l4_onCiiChange(event) {
-    window._l4_baseCiiText = null;
+    window.AppState.logic4.baseCiiText = null;
     const file = event.target.files[0];
     if (!file) return;
-    window._l4_baseCiiText = await file.text();
+    window.AppState.logic4.baseCiiText = await file.text();
     _l4_log('Logic 4: Base CII loaded: ' + file.name);
 }
 
 async function _l4_onConvertClick() {
     _l4_setStatus('processing', '');
-    if (!window._l4_elemRows && !window._l4_elemRows) { _l4_log('Logic 4 ERROR: No file loaded.'); return; }
+    if (!window.AppState.logic4.elemRows) { _l4_log('Logic 4 ERROR: No file loaded.'); return; }
     document.dispatchEvent(new CustomEvent('l4-convert'));
 }
 
@@ -1609,10 +1638,10 @@ document.addEventListener('DOMContentLoaded', () => {
 // ── Logic 1: JS global inspector ──────────────────────────────────────────────
 function _l1_inspectJS() {
     const out = document.getElementById('l1-debug-js-out');
-    const rows = window._l1_elemRows;
+    const rows = window.AppState.logic1.elemRows;
     const info = ['=== Logic 1 JS Globals ==='];
-    info.push('_l1_inputFilename : ' + (window._l1_inputFilename || 'null'));
-    info.push('_l1_elemRows      : ' + (rows ? rows.length + ' rows' : 'null'));
+    info.push('inputFilename : ' + (window.AppState.logic1.inputFilename || 'null'));
+    info.push('elemRows      : ' + (rows ? rows.length + ' rows' : 'null'));
     if (rows && rows.length > 0) {
         const r = rows[0];
         const keys = (typeof r.to_py === 'function') ? Object.keys(r.to_py()) : Object.keys(r);
@@ -1632,12 +1661,12 @@ function _l1_inspectJS() {
 // ── Logic 2: JS global inspector ──────────────────────────────────────────────
 function _l2_inspectJS() {
     const out = document.getElementById('l2-debug-js-out');
-    const rows = window._l2_tableRows;
-    const ciiText = window._l2_baseCiiText;
+    const rows = window.AppState.logic2.tableRows;
+    const ciiText = window.AppState.logic2.baseCiiText;
     const info = ['=== Logic 2 JS Globals ==='];
-    info.push('_l2_inputFilename : ' + (window._l2_inputFilename || 'null'));
-    info.push('_l2_tableRows     : ' + (rows ? rows.length + ' rows' : 'null'));
-    info.push('_l2_baseCiiText   : ' + (ciiText ? ciiText.length + ' chars' : 'null'));
+    info.push('inputFilename : ' + (window.AppState.logic2.inputFilename || 'null'));
+    info.push('tableRows     : ' + (rows ? rows.length + ' rows' : 'null'));
+    info.push('baseCiiText   : ' + (ciiText ? ciiText.length + ' chars' : 'null'));
     if (rows && rows.length > 0) {
         const r = rows[0];
         const keys = (typeof r.to_py === 'function') ? Object.keys(r.to_py()) : Object.keys(r);
@@ -1661,17 +1690,18 @@ function _l2_inspectJS() {
 // ── Logic 3: JS inspector + single-row test ────────────────────────────────────
 function _l3_inspectJS() {
     const out = document.getElementById('l3-debug-js-out');
+    const tableRows = window.AppState.logic3.tableRows;
     const info = ['=== Logic 3 JS State ==='];
     info.push('_l3_fileBuffer  : ' + (_l3_fileBuffer ? _l3_fileBuffer.byteLength + ' bytes' : 'null'));
     info.push('_l3_csvText     : ' + (_l3_csvText ? _l3_csvText.length + ' chars' : 'null'));
-    info.push('_l3_tableRows   : ' + (_l3_tableRows ? _l3_tableRows.length + ' rows' : 'null'));
+    info.push('tableRows   : ' + (tableRows ? tableRows.length + ' rows' : 'null'));
     info.push('');
     info.push('--- Logic3_BENCHMARK_BLOCKS ---');
     info.push(typeof Logic3_BENCHMARK_BLOCKS !== 'undefined'
         ? 'Loaded — ' + Object.keys(Logic3_BENCHMARK_BLOCKS).length + ' keys: ' + Object.keys(Logic3_BENCHMARK_BLOCKS).join(', ')
         : 'NOT LOADED — check generate_final.js and benchmark_data.js');
-    if (_l3_tableRows && _l3_tableRows.length > 0) {
-        const r = _l3_tableRows[0];
+    if (tableRows && tableRows.length > 0) {
+        const r = tableRows[0];
         info.push('');
         info.push('--- Column Keys (' + Object.keys(r).length + ') ---');
         info.push(Object.keys(r).join('  '));
@@ -1686,7 +1716,7 @@ function _l3_inspectJS() {
 
 function _l3_testGenerate() {
     const out = document.getElementById('l3-debug-js-out');
-    if (!_l3_tableRows || _l3_tableRows.length === 0) {
+    if (!window.AppState.logic3.tableRows || window.AppState.logic3.tableRows.length === 0) {
         out.textContent = 'ERROR: No rows loaded. Load a file in the Processing tab first.';
         return;
     }
@@ -1695,7 +1725,7 @@ function _l3_testGenerate() {
         return;
     }
     try {
-        const result = Logic3_generateFinal([_l3_tableRows[0]], Logic3_BENCHMARK_BLOCKS);
+        const result = Logic3_generateFinal([window.AppState.logic3.tableRows[0]], Logic3_BENCHMARK_BLOCKS);
         out.textContent = '=== Single Row CII Output (first 900 chars) ===\n' + result.substring(0, 900);
     } catch(e) {
         out.textContent = 'ERROR during test generation:\n' + e.message + '\n' + (e.stack || '');
@@ -1705,15 +1735,15 @@ function _l3_testGenerate() {
 // ── Logic 4: JS global inspector ──────────────────────────────────────────────
 function _l4_inspectJS() {
     const out = document.getElementById('l4-debug-js-out');
-    const elemRows = window._l4_elemRows;
+    const elemRows = window.AppState.logic4.elemRows;
     const info = ['=== Logic 4 JS Globals ==='];
-    info.push('_l4_inputFilename : ' + (window._l4_inputFilename || 'null'));
-    info.push('_l4_elemRows      : ' + (elemRows ? elemRows.length + ' rows' : 'null'));
-    info.push('_l4_bendRows      : ' + (window._l4_bendRows   ? window._l4_bendRows.length   + ' rows' : 'null'));
-    info.push('_l4_restRows      : ' + (window._l4_restRows   ? window._l4_restRows.length   + ' rows' : 'null'));
-    info.push('_l4_rigidRows     : ' + (window._l4_rigidRows  ? window._l4_rigidRows.length  + ' rows' : 'null'));
-    info.push('_l4_sifRows       : ' + (window._l4_sifRows    ? window._l4_sifRows.length    + ' rows' : 'null'));
-    info.push('_l4_baseCiiText   : ' + (window._l4_baseCiiText ? window._l4_baseCiiText.length + ' chars' : 'null'));
+    info.push('inputFilename : ' + (window.AppState.logic4.inputFilename || 'null'));
+    info.push('elemRows      : ' + (elemRows ? elemRows.length + ' rows' : 'null'));
+    info.push('bendRows      : ' + (window.AppState.logic4.bendRows   ? window.AppState.logic4.bendRows.length   + ' rows' : 'null'));
+    info.push('restRows      : ' + (window.AppState.logic4.restRows   ? window.AppState.logic4.restRows.length   + ' rows' : 'null'));
+    info.push('rigidRows     : ' + (window.AppState.logic4.rigidRows  ? window.AppState.logic4.rigidRows.length  + ' rows' : 'null'));
+    info.push('sifRows       : ' + (window.AppState.logic4.sifRows    ? window.AppState.logic4.sifRows.length    + ' rows' : 'null'));
+    info.push('baseCiiText   : ' + (window.AppState.logic4.baseCiiText ? window.AppState.logic4.baseCiiText.length + ' chars' : 'null'));
     if (elemRows && elemRows.length > 0) {
         const r = elemRows[0];
         const keys = (typeof r.to_py === 'function') ? Object.keys(r.to_py()) : Object.keys(r);
@@ -1948,7 +1978,7 @@ async def on_l2_convert(event):
     log_status("Logic 2: Starting conversion...")
 
     # Get rows from JS global
-    js_rows = window._l2_tableRows
+    js_rows = window.AppState.logic2.tableRows
     if js_rows is None:
         log_status("[ERROR] Logic 2: No input data. Load an ACCDB or CSV in the Processing tab.")
         return
@@ -1965,7 +1995,7 @@ async def on_l2_convert(event):
 
     # Parse optional base CII
     base_data = None
-    js_cii_text = window._l2_baseCiiText
+    js_cii_text = window.AppState.logic2.baseCiiText
     if js_cii_text:
         try:
             n1 = int(document.getElementById("l2-setting-n1").value or 2000)
@@ -2000,7 +2030,7 @@ async def on_l2_convert(event):
         return
 
     # Download
-    raw_name = str(window._l2_inputFilename or "output")
+    raw_name = str(window.AppState.logic2.inputFilename or "output")
     import re as _re
     out_name = _re.sub(r'\.(accdb|mdb|csv)$', '', raw_name, flags=_re.IGNORECASE) + '_logic2.cii'
     download_file(cii_text, out_name, "text/plain")
@@ -2065,7 +2095,7 @@ async def on_l1_convert(event):
     global _l1_parsed_data
     log_status("Logic 1: Starting conversion...")
 
-    js_elem_rows = window._l1_elemRows
+    js_elem_rows = window.AppState.logic1.elemRows
     if js_elem_rows is None:
         log_status("[ERROR] Logic 1: No input data. Load an ACCDB or Universal CSV.")
         return
@@ -2086,7 +2116,7 @@ async def on_l1_convert(event):
         import traceback; log_status(traceback.format_exc())
         return
 
-    raw_name = str(window._l1_inputFilename or "output")
+    raw_name = str(window.AppState.logic1.inputFilename or "output")
     import re as _re
     out_name = _re.sub(r'\.(accdb|mdb|csv)$', '', raw_name, flags=_re.IGNORECASE) + '_logic1.cii'
     download_file(cii_text, out_name, "text/plain")
@@ -2099,7 +2129,7 @@ async def on_l1_export_intermediate(event):
     global _l1_parsed_data
     log_status("Logic 1: Exporting intermediate CSV...")
 
-    js_elem_rows = window._l1_elemRows
+    js_elem_rows = window.AppState.logic1.elemRows
     if js_elem_rows is None and _l1_parsed_data is None:
         log_status("[ERROR] Logic 1: No data. Run Convert first.")
         return
@@ -2153,7 +2183,7 @@ async def on_l4_convert(event):
     global _l4_last_elem_df, _l4_last_bend_rows, _l4_last_rest_rows, _l4_last_rigid_rows, _l4_last_sif_rows
     log_status("Logic 4: Starting hybrid conversion...")
 
-    js_elem = window._l4_elemRows
+    js_elem = window.AppState.logic4.elemRows
     if js_elem is None:
         log_status("[ERROR] Logic 4: No input data. Load an ACCDB or Universal CSV.")
         return
@@ -2186,10 +2216,10 @@ async def on_l4_convert(event):
         def _js_to_list(js_obj):
             if js_obj is None: return None
             return _js_rows_to_list_of_dicts(js_obj)
-        bend_rows  = _js_to_list(window._l4_bendRows)
-        rest_rows  = _js_to_list(window._l4_restRows)
-        rigid_rows = _js_to_list(window._l4_rigidRows)
-        sif_rows   = _js_to_list(window._l4_sifRows)
+        bend_rows  = _js_to_list(window.AppState.logic4.bendRows)
+        rest_rows  = _js_to_list(window.AppState.logic4.restRows)
+        rigid_rows = _js_to_list(window.AppState.logic4.rigidRows)
+        sif_rows   = _js_to_list(window.AppState.logic4.sifRows)
 
     # Cache for universal CSV export
     _l4_last_elem_df    = elem_df
@@ -2200,7 +2230,7 @@ async def on_l4_convert(event):
 
     # Parse optional base CII
     base_data = None
-    js_cii_text = window._l4_baseCiiText
+    js_cii_text = window.AppState.logic4.baseCiiText
     if js_cii_text:
         try:
             from Logic2_parser import CIIParser as _L4Parser, ParserSettings as _L4PS
@@ -2227,7 +2257,7 @@ async def on_l4_convert(event):
         import traceback; log_status(traceback.format_exc())
         return
 
-    raw_name = str(window._l4_inputFilename or "output")
+    raw_name = str(window.AppState.logic4.inputFilename or "output")
     import re as _re
     out_name = _re.sub(r'\.(accdb|mdb|csv)$', '', raw_name, flags=_re.IGNORECASE) + '_logic4.cii'
     download_file(cii_text, out_name, "text/plain")
@@ -2241,7 +2271,7 @@ async def on_l4_export_intermediate(event):
     log_status("Logic 4: Exporting Universal CSV...")
 
     if _l4_last_elem_df is None:
-        js_elem = window._l4_elemRows
+        js_elem = window.AppState.logic4.elemRows
         if js_elem is None:
             log_status("[ERROR] Logic 4: No data. Load a file or run Convert first.")
             return
@@ -2251,10 +2281,10 @@ async def on_l4_export_intermediate(event):
         def _js_to_list(js_obj):
             if js_obj is None: return None
             return _js_rows_to_list_of_dicts(js_obj)
-        _l4_last_bend_rows  = _js_to_list(window._l4_bendRows)
-        _l4_last_rest_rows  = _js_to_list(window._l4_restRows)
-        _l4_last_rigid_rows = _js_to_list(window._l4_rigidRows)
-        _l4_last_sif_rows   = _js_to_list(window._l4_sifRows)
+        _l4_last_bend_rows  = _js_to_list(window.AppState.logic4.bendRows)
+        _l4_last_rest_rows  = _js_to_list(window.AppState.logic4.restRows)
+        _l4_last_rigid_rows = _js_to_list(window.AppState.logic4.rigidRows)
+        _l4_last_sif_rows   = _js_to_list(window.AppState.logic4.sifRows)
 
     try:
         univ_df = L4_build_universal_csv(
@@ -2270,7 +2300,7 @@ async def on_l4_export_intermediate(event):
         import traceback; log_status(traceback.format_exc())
         return
 
-    raw_name = str(window._l4_inputFilename or "output")
+    raw_name = str(window.AppState.logic4.inputFilename or "output")
     import re as _re
     out_name = _re.sub(r'\.(accdb|mdb|csv)$', '', raw_name, flags=_re.IGNORECASE) + '_universal.csv'
     download_file(csv_str, out_name, "text/csv")
@@ -2305,9 +2335,9 @@ btn_clear.addEventListener("click", create_proxy(clear_logs))
 
 async def on_l1_debug(event):
     log_status("=== [L1 PYTHON DEBUG] ===")
-    js_rows = window._l1_elemRows
-    log_status(f"window._l1_inputFilename : {window._l1_inputFilename}")
-    log_status(f"window._l1_elemRows      : {'None' if js_rows is None else str(js_rows.length) + ' rows'}")
+    js_rows = window.AppState.logic1.elemRows
+    log_status(f"inputFilename : {window.AppState.logic1.inputFilename}")
+    log_status(f"elemRows      : {'None' if js_rows is None else str(js_rows.length) + ' rows'}")
     global _l1_parsed_data
     log_status(f"_l1_parsed_data (CII text): {'None' if _l1_parsed_data is None else str(len(_l1_parsed_data)) + ' chars'}")
     if js_rows is not None and js_rows.length > 0:
@@ -2323,11 +2353,11 @@ async def on_l1_debug(event):
 
 async def on_l2_debug(event):
     log_status("=== [L2 PYTHON DEBUG] ===")
-    js_rows = window._l2_tableRows
-    log_status(f"window._l2_inputFilename : {window._l2_inputFilename}")
-    log_status(f"window._l2_tableRows     : {'None' if js_rows is None else str(js_rows.length) + ' rows'}")
-    cii_t = window._l2_baseCiiText
-    log_status(f"window._l2_baseCiiText   : {'None' if cii_t is None else str(len(cii_t)) + ' chars'}")
+    js_rows = window.AppState.logic2.tableRows
+    log_status(f"inputFilename : {window.AppState.logic2.inputFilename}")
+    log_status(f"tableRows     : {'None' if js_rows is None else str(js_rows.length) + ' rows'}")
+    cii_t = window.AppState.logic2.baseCiiText
+    log_status(f"baseCiiText   : {'None' if cii_t is None else str(len(cii_t)) + ' chars'}")
     global _l2_parsed_data
     if _l2_parsed_data is not None:
         elems = _l2_parsed_data.get('elements', [])
@@ -2353,13 +2383,13 @@ async def on_l2_debug(event):
 
 async def on_l4_debug(event):
     log_status("=== [L4 PYTHON DEBUG] ===")
-    js_elem = window._l4_elemRows
-    log_status(f"window._l4_inputFilename : {window._l4_inputFilename}")
-    log_status(f"window._l4_elemRows      : {'None' if js_elem is None else str(js_elem.length) + ' rows'}")
-    log_status(f"window._l4_bendRows      : {'None' if window._l4_bendRows  is None else str(window._l4_bendRows.length)  + ' rows'}")
-    log_status(f"window._l4_restRows      : {'None' if window._l4_restRows  is None else str(window._l4_restRows.length)  + ' rows'}")
-    log_status(f"window._l4_rigidRows     : {'None' if window._l4_rigidRows is None else str(window._l4_rigidRows.length) + ' rows'}")
-    log_status(f"window._l4_sifRows       : {'None' if window._l4_sifRows   is None else str(window._l4_sifRows.length)   + ' rows'}")
+    js_elem = window.AppState.logic4.elemRows
+    log_status(f"inputFilename : {window.AppState.logic4.inputFilename}")
+    log_status(f"elemRows      : {'None' if js_elem is None else str(js_elem.length) + ' rows'}")
+    log_status(f"bendRows      : {'None' if window.AppState.logic4.bendRows  is None else str(window.AppState.logic4.bendRows.length)  + ' rows'}")
+    log_status(f"restRows      : {'None' if window.AppState.logic4.restRows  is None else str(window.AppState.logic4.restRows.length)  + ' rows'}")
+    log_status(f"rigidRows     : {'None' if window.AppState.logic4.rigidRows is None else str(window.AppState.logic4.rigidRows.length) + ' rows'}")
+    log_status(f"sifRows       : {'None' if window.AppState.logic4.sifRows   is None else str(window.AppState.logic4.sifRows.length)   + ' rows'}")
     global _l4_last_elem_df, _l4_last_bend_rows, _l4_last_rest_rows, _l4_last_rigid_rows, _l4_last_sif_rows
     if _l4_last_elem_df is not None:
         import pandas as _pd

@@ -4,8 +4,22 @@ DEFAULT_MATERIAL_ID = 1      # fallback material if MATERIAL_NUM not in row
 DEFAULT_TEMPERATURE = 70.0
 DEFAULT_PRESSURE = 0.0
 
-CAESAR_AUTO_CALC_FLOAT = -1.0101
-CAESAR_AUTO_CALC_STR   = " -1.0101d0"
+def get_sentinel_float():
+    import js
+    try:
+        ui_val = js.document.getElementById('l1-setting-sentinel').value
+        if ui_val:
+            return float(ui_val)
+    except:
+        pass
+    return -1.0101
+
+def get_sentinel_str():
+    val = get_sentinel_float()
+    return f" {val}d0"
+
+CAESAR_AUTO_CALC_FLOAT = get_sentinel_float()
+CAESAR_AUTO_CALC_STR   = get_sentinel_str()
 
 INDEX_TEMPERATURE_START = 19
 INDEX_TEMPERATURE_END   = 27
