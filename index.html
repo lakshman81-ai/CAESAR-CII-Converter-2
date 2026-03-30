@@ -21,6 +21,18 @@
             defaultTable: 'INPUT_BASIC_ELEMENT_DATA'
         };
 
+        window.AccessDiagnostics = {
+            _diagnostics: [],
+            emit: function(diag) {
+                this._diagnostics.unshift(diag);
+                if (this._diagnostics.length > 20) {
+                    this._diagnostics.pop();
+                }
+                document.dispatchEvent(new CustomEvent('ACCESS_DIAGNOSTICS', { detail: diag }));
+                return diag;
+            }
+        };
+
         window.CSVAdapter = {
             parse(text) {
                 const lines = text.split(/\r?\n/).filter(l => l.trim() !== '');
@@ -109,10 +121,10 @@
                 } else if (errMessage.includes('table') || errMessage.includes('not found')) {
                     code = 'TABLE_NOT_FOUND';
                     message = 'The required table was not found in the database.';
-                } else if (errMessage.includes('Failed to fetch') || errMessage.includes('NetworkError') || errMessage.includes('server')) {
+                } else if (errMessage.includes('Failed to fetch') || errMessage.includes('NetworkError')) {
                     code = 'SERVER_FAILED';
                     message = 'Failed to reach the fallback server. Please ensure the server is running or use CSV.';
-                } else if (errMessage.includes('mdb-reader or Buffer not ready') || errMessage.includes('ready')) {
+                } else if (errMessage.includes('mdb-reader or Buffer not ready')) {
                     code = 'RUNTIME_NOT_READY';
                     message = 'Browser parser runtime is not ready.';
                 }
@@ -189,7 +201,7 @@
                     diagBase.strategy = 'server-fallback';
                     diagBase.availableTables = Object.keys(cachedData);
                     diagBase.perf.totalMs = Math.round(performance.now() - startTotal);
-                    this._emitDiagnostic({ ...diagBase, outcome: 'success', error: null });
+                    window.AccessDiagnostics.emit({ ...diagBase, outcome: 'success', error: null });
                     updateStatus('table resolved');
                     return { tablesData, tablesList: diagBase.availableTables, diag: diagBase };
                 }
@@ -229,7 +241,7 @@
                         diagBase.perf.parseMs = Math.round(endParse - startParse);
                         diagBase.perf.totalMs = Math.round(endParse - startTotal);
 
-                        this._emitDiagnostic({
+                        window.AccessDiagnostics.emit({
                             ...diagBase,
                             outcome: 'success',
                             error: null
@@ -274,7 +286,7 @@
                                 const serverData = await response.json();
 
                                 diagBase.perf.totalMs = Math.round(performance.now() - startTotal);
-                                this._emitDiagnostic({ ...diagBase, outcome: 'success', error: null });
+                                window.AccessDiagnostics.emit({ ...diagBase, outcome: 'success', error: null });
                                 updateStatus('table resolved via server');
 
                                 // Re-wrap to maintain expected return payload
@@ -293,7 +305,11 @@
                                     rawMessage: (serverErr.message || '').substring(0, 100),
                                     stackTop: serverErr.stack ? serverErr.stack.split('\n')[1] : ''
                                 };
-                                this._emitDiagnostic({ ...diagBase, outcome: 'failure' });
+
+                                // Explicitly match user requested behavior of chaining messages
+                                diagBase.error.message = `Browser parse failed (${normErr.message}). Fallback server also failed: ${diagBase.error.message}`;
+
+                                window.AccessDiagnostics.emit({ ...diagBase, outcome: 'failure' });
                                 updateStatus('server parse failed');
                                 throw new Error(diagBase.error.message + " Please use CSV instead.");
                             }
@@ -301,7 +317,7 @@
                         } else {
                             // Strategy 3: Guided CSV path
                             diagBase.strategy = 'csv-guidance';
-                            this._emitDiagnostic({ ...diagBase, outcome: 'failure' });
+                            window.AccessDiagnostics.emit({ ...diagBase, outcome: 'failure' });
                             updateStatus('browser parse failed');
                             throw new Error(normErr.message + " Please use CSV instead.");
                         }
@@ -316,7 +332,7 @@
                     };
                     diagBase.strategy = 'csv-guidance';
                     diagBase.perf.totalMs = Math.round(performance.now() - startTotal);
-                    this._emitDiagnostic({ ...diagBase, outcome: 'failure' });
+                    window.AccessDiagnostics.emit({ ...diagBase, outcome: 'failure' });
                     updateStatus('runtime not loaded');
                     throw new Error("Access tools not loaded. Please refresh or use CSV.");
                 }
@@ -427,7 +443,7 @@
                             if (statusCallback) statusCallback('table resolved');
 
                             // We emit here because it hit fallback, useful to know metadata fetch used fallback
-                            this._emitDiagnostic(diag);
+                            window.AccessDiagnostics.emit(diag);
                             return { tablesList: diag.availableTables, diag, cachedData: data.tablesData || { [window.ACCESS_IMPORT_CONFIG.defaultTable]: data.data } };
 
                         } catch (serverErr) {
@@ -437,14 +453,14 @@
                                 diag.error.message = `Browser parse failed (${fallbackError.message}). Fallback server also failed: ${diag.error.message}`;
                             }
                             diag.outcome = 'failure';
-                            this._emitDiagnostic(diag);
+                            window.AccessDiagnostics.emit(diag);
                             throw new Error(diag.error.message);
                         }
                     } else {
                         diag.strategy = 'csv-guidance';
                         diag.error = this.normalizeAccessError(fallbackError);
                         diag.outcome = 'failure';
-                        this._emitDiagnostic(diag);
+                        window.AccessDiagnostics.emit(diag);
                         throw new Error(diag.error.message);
                     }
                 }
@@ -1113,7 +1129,7 @@
                 });
 
                 document.getElementById('btn-copy-diagnostics').addEventListener('click', () => {
-                    const text = JSON.stringify(window.AccessAdapter._diagnostics, null, 2);
+                    const text = JSON.stringify(window.AccessDiagnostics._diagnostics, null, 2);
                     navigator.clipboard.writeText(text).then(() => {
                         const btn = document.getElementById('btn-copy-diagnostics');
                         const orig = btn.textContent;
@@ -1125,7 +1141,7 @@
                 document.getElementById('btn-clear-diagnostics').addEventListener('click', () => {
                     diagContent.textContent = '';
                     diagPanel.classList.add('hidden');
-                    window.AccessAdapter._diagnostics = [];
+                    window.AccessDiagnostics._diagnostics = [];
                 });
             });
         </script>
