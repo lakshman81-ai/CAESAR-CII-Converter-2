@@ -13,6 +13,207 @@
         window.mdbReader = { Database: Database };
         window.Buffer = Buffer;
     </script>
+    <!-- Access Import Shared Adapter & Config -->
+    <script>
+        window.ACCESS_IMPORT_CONFIG = {
+            enableServerFallback: true,
+            serverUrl: 'http://127.0.0.1:8000/convert_accdb',
+            defaultTable: 'INPUT_BASIC_ELEMENT_DATA'
+        };
+
+        window.AccessAdapter = {
+            // Memory trail for diagnostics
+            _diagnostics: [],
+
+            isAccessFile(fileName) {
+                const name = fileName.toLowerCase();
+                return name.endsWith('.accdb') || name.endsWith('.mdb');
+            },
+
+            loadAccessRuntime() {
+                return window.mdbReader && window.Buffer;
+            },
+
+            normalizeAccessError(err) {
+                const msg = err.message || '';
+                if (msg.includes('not supported') || msg.includes('format')) {
+                    return { code: 'ACCESS_UNSUPPORTED', message: 'This Access format is not supported in browser mode. Use local bridge mode or upload CSV.' };
+                }
+                if (msg.includes('table') || msg.includes('not found')) {
+                    return { code: 'TABLE_NOT_FOUND', message: 'The required table was not found in the database.' };
+                }
+                if (msg.includes('ready')) {
+                    return { code: 'RUNTIME_NOT_READY', message: 'The Access file reader is not yet loaded. Please refresh.' };
+                }
+                if (msg.includes('fetch') || msg.includes('server')) {
+                    return { code: 'SERVER_FAILED', message: 'Failed to reach the fallback server. Is it running?' };
+                }
+                return { code: 'PARSE_FAILED', message: 'An unexpected error occurred while parsing the file.' };
+            },
+
+            _emitDiagnostic(data) {
+                const ts = new Date().toISOString();
+                const diag = { ts, ...data };
+                this._diagnostics.unshift(diag);
+                if (this._diagnostics.length > 20) {
+                    this._diagnostics.pop();
+                }
+                // Dispatch event so UI can update
+                document.dispatchEvent(new CustomEvent('ACCESS_DIAGNOSTICS', { detail: diag }));
+                return diag;
+            },
+
+            async parseAccessTables(fileBuffer, fileName, tableNames, logic, statusCallback) {
+                const updateStatus = (msg) => {
+                    if (statusCallback) statusCallback(msg);
+                };
+
+                updateStatus('loading runtime');
+                const ext = fileName.slice(fileName.lastIndexOf('.')).toLowerCase();
+                const fileSizeBytes = fileBuffer.byteLength;
+                const traceId = Math.random().toString(36).substring(2, 9);
+
+                let diagBase = {
+                    traceId,
+                    logic,
+                    fileName,
+                    fileExt: ext,
+                    fileSizeBytes,
+                    runtime: {
+                        mdbReaderReady: !!window.mdbReader,
+                        bufferReady: !!window.Buffer,
+                        pyscriptReady: !!document.querySelector('py-config')
+                    },
+                    selectedTable: Array.isArray(tableNames) ? tableNames.join(',') : tableNames,
+                    availableTables: [],
+                    strategy: 'browser',
+                    perf: { readMs: 0, parseMs: 0, totalMs: 0 }
+                };
+
+                const startTotal = performance.now();
+
+                // Strategy 1: Browser Parser
+                updateStatus('reading file');
+                if (this.loadAccessRuntime()) {
+                    try {
+                        updateStatus('parsing');
+                        const startParse = performance.now();
+                        const { Database } = window.mdbReader;
+                        const db = new Database(window.Buffer.from(fileBuffer));
+                        const availableTables = db.getTableNames();
+                        diagBase.availableTables = availableTables;
+
+                        const tablesToExtract = Array.isArray(tableNames) ? tableNames : [tableNames];
+                        const results = {};
+
+                        for (const tableName of tablesToExtract) {
+                            try {
+                                const table = db.getTable(tableName);
+                                results[tableName] = table.getData();
+                            } catch (e) {
+                                // Table might not exist, that can be normal for some aux tables
+                                results[tableName] = [];
+                            }
+                        }
+
+                        const endParse = performance.now();
+                        diagBase.perf.parseMs = Math.round(endParse - startParse);
+                        diagBase.perf.totalMs = Math.round(endParse - startTotal);
+
+                        this._emitDiagnostic({
+                            ...diagBase,
+                            outcome: 'success',
+                            error: null
+                        });
+
+                        updateStatus('table resolved');
+                        return Array.isArray(tableNames) ? results : results[tableNames];
+                    } catch (e) {
+                        // Browser parse failed, prepare for Strategy 2/3
+                        const normErr = this.normalizeAccessError(e);
+                        diagBase.error = {
+                            code: normErr.code,
+                            message: normErr.message,
+                            rawName: e.name,
+                            rawMessage: (e.message || '').substring(0, 100),
+                            stackTop: e.stack ? e.stack.split('\n')[1] : ''
+                        };
+
+                        // Strategy 2: Server Fallback (if enabled)
+                        if (window.ACCESS_IMPORT_CONFIG.enableServerFallback) {
+                            updateStatus('falling back to server parse...');
+                            diagBase.strategy = 'server-fallback';
+
+                            try {
+                                const formData = new FormData();
+                                formData.append('file', new Blob([fileBuffer]), fileName);
+                                formData.append('tables', Array.isArray(tableNames) ? tableNames.join(',') : tableNames);
+
+                                const response = await fetch(window.ACCESS_IMPORT_CONFIG.serverUrl, {
+                                    method: 'POST',
+                                    body: formData
+                                });
+
+                                if (!response.ok) {
+                                    throw new Error(`Server returned status ${response.status}`);
+                                }
+
+                                const serverData = await response.json();
+
+                                diagBase.perf.totalMs = Math.round(performance.now() - startTotal);
+                                this._emitDiagnostic({ ...diagBase, outcome: 'success', error: null });
+                                updateStatus('table resolved via server');
+
+                                return Array.isArray(tableNames) ? serverData : serverData[tableNames];
+
+                            } catch (serverErr) {
+                                // Fallback server failed -> Strategy 3
+                                diagBase.error = {
+                                    code: 'SERVER_FAILED',
+                                    message: 'Failed to reach the fallback server. Is it running?',
+                                    rawName: serverErr.name,
+                                    rawMessage: (serverErr.message || '').substring(0, 100),
+                                    stackTop: serverErr.stack ? serverErr.stack.split('\n')[1] : ''
+                                };
+                                this._emitDiagnostic({ ...diagBase, outcome: 'failure' });
+                                updateStatus('server parse failed');
+                                throw new Error(diagBase.error.message + " Please use CSV instead.");
+                            }
+
+                        } else {
+                            // Strategy 3: Guided CSV path
+                            diagBase.strategy = 'csv-guidance';
+                            this._emitDiagnostic({ ...diagBase, outcome: 'failure' });
+                            updateStatus('browser parse failed');
+                            throw new Error(normErr.message + " Please use CSV instead.");
+                        }
+                    }
+                } else {
+                    diagBase.error = {
+                        code: 'RUNTIME_NOT_READY',
+                        message: 'Browser parser not loaded.',
+                        rawName: 'Error',
+                        rawMessage: 'mdbReader or Buffer missing',
+                        stackTop: ''
+                    };
+                    diagBase.strategy = 'csv-guidance';
+                    diagBase.perf.totalMs = Math.round(performance.now() - startTotal);
+                    this._emitDiagnostic({ ...diagBase, outcome: 'failure' });
+                    updateStatus('runtime not loaded');
+                    throw new Error("Access tools not loaded. Please refresh or use CSV.");
+                }
+            },
+
+            async extractTableNames(fileBuffer) {
+                if (this.loadAccessRuntime()) {
+                     const { Database } = window.mdbReader;
+                     const db = new Database(window.Buffer.from(fileBuffer));
+                     return db.getTableNames();
+                }
+                return [];
+            }
+        };
+    </script>
     <!-- PyScript -->
     <link rel="stylesheet" href="https://pyscript.net/releases/2024.1.1/core.css" />
     <script type="module" src="https://pyscript.net/releases/2024.1.1/core.js"></script>
@@ -627,6 +828,53 @@
             </div>
         </div>
 
+        <!-- ===== Diagnostics ===== -->
+        <div class="mt-6 p-4 border border-rose-200 rounded-lg bg-rose-50 hidden" id="diagnostics-panel">
+            <div class="flex justify-between items-center mb-2">
+                <h3 class="font-bold text-rose-800 text-sm">Access Import Diagnostics:</h3>
+                <div class="flex gap-2">
+                    <button id="btn-copy-diagnostics"
+                            class="text-xs bg-rose-600 hover:bg-rose-700 text-white px-3 py-1.5 rounded font-medium">
+                        Copy Debug JSON
+                    </button>
+                    <button id="btn-clear-diagnostics"
+                            class="text-xs bg-white hover:bg-rose-100 text-rose-700 px-3 py-1.5 rounded border border-rose-300">
+                        Clear
+                    </button>
+                </div>
+            </div>
+            <pre id="diagnostics-content" class="bg-gray-900 text-green-400 p-3 rounded text-xs overflow-auto max-h-48 whitespace-pre font-mono shadow-inner"></pre>
+        </div>
+
+        <script>
+            document.addEventListener('DOMContentLoaded', () => {
+                const diagPanel = document.getElementById('diagnostics-panel');
+                const diagContent = document.getElementById('diagnostics-content');
+
+                document.addEventListener('ACCESS_DIAGNOSTICS', (e) => {
+                    diagPanel.classList.remove('hidden');
+                    const text = JSON.stringify(e.detail, null, 2);
+                    diagContent.textContent = text + '\n\n' + diagContent.textContent;
+                });
+
+                document.getElementById('btn-copy-diagnostics').addEventListener('click', () => {
+                    const text = JSON.stringify(window.AccessAdapter._diagnostics, null, 2);
+                    navigator.clipboard.writeText(text).then(() => {
+                        const btn = document.getElementById('btn-copy-diagnostics');
+                        const orig = btn.textContent;
+                        btn.textContent = 'Copied!';
+                        setTimeout(() => btn.textContent = orig, 2000);
+                    });
+                });
+
+                document.getElementById('btn-clear-diagnostics').addEventListener('click', () => {
+                    diagContent.textContent = '';
+                    diagPanel.classList.add('hidden');
+                    window.AccessAdapter._diagnostics = [];
+                });
+            });
+        </script>
+
         <!-- ===== Logs ===== -->
         <div class="mt-6 text-sm text-gray-500 flex flex-col h-64" id="logs-container">
             <div class="flex justify-between items-center mb-2">
@@ -818,23 +1066,13 @@ async function _l3_onFileChange(event) {
 
     const name = file.name.toLowerCase();
 
-    if (name.endsWith('.accdb') || name.endsWith('.mdb')) {
-        _l3_log('Reading ACCDB: ' + file.name);
+    if (window.AccessAdapter.isAccessFile(file.name)) {
+        _l3_log('Reading Access file: ' + file.name);
         _l3_fileBuffer = await file.arrayBuffer();
-
-        if (!window.mdbReader || !window.Buffer) {
-            _l3_log('ERROR: mdb-reader not yet loaded. Refresh and try again.');
-            return;
-        }
         try {
-            const { Database } = window.mdbReader;
-            const db = new Database(window.Buffer.from(_l3_fileBuffer));
-            const tables = db.getTableNames();
-
+            const tables = await window.AccessAdapter.extractTableNames(_l3_fileBuffer);
             tableSelect.innerHTML = '';
-            const preferredTable = document.getElementById('l3-setting-table-name').value.trim()
-                                   || 'INPUT_BASIC_ELEMENT_DATA';
-
+            const preferredTable = document.getElementById('l3-setting-table-name').value.trim() || window.ACCESS_IMPORT_CONFIG.defaultTable;
             tables.forEach(t => {
                 const opt = document.createElement('option');
                 opt.value = t;
@@ -842,13 +1080,11 @@ async function _l3_onFileChange(event) {
                 if (t === preferredTable) opt.selected = true;
                 tableSelect.appendChild(opt);
             });
-
             tableSelector.classList.remove('hidden');
             _l3_log('Found ' + tables.length + ' table(s). Select table then click Convert.');
         } catch (e) {
-            _l3_log('ERROR parsing ACCDB: ' + e.message);
+            _l3_log('ERROR extracting tables: ' + e.message);
         }
-
     } else if (name.endsWith('.csv')) {
         _l3_log('CSV file selected: ' + file.name);
         _l3_csvText = await file.text();
@@ -872,22 +1108,22 @@ async function _l3_convert() {
     const name = file.name.toLowerCase();
     let rows = null;
 
-    if (name.endsWith('.accdb') || name.endsWith('.mdb')) {
+    if (window.AccessAdapter.isAccessFile(file.name)) {
         if (!_l3_fileBuffer) {
-            _l3_log('ERROR: ACCDB buffer not loaded. Re-select the file.');
+            _l3_log('ERROR: Buffer not loaded. Re-select the file.');
             return;
         }
         const tableName = document.getElementById('l3-selected-table').value
                           || document.getElementById('l3-setting-table-name').value.trim()
-                          || 'INPUT_BASIC_ELEMENT_DATA';
+                          || window.ACCESS_IMPORT_CONFIG.defaultTable;
         try {
-            const { Database } = window.mdbReader;
-            const db = new Database(window.Buffer.from(_l3_fileBuffer));
-            const table = db.getTable(tableName);
-            rows = table.getData();
+            rows = await window.AccessAdapter.parseAccessTables(_l3_fileBuffer, file.name, tableName, 'l3', (msg) => {
+                _l3_setStatus('processing', msg);
+                _l3_log(`Logic 3 Status: ${msg}`);
+            });
             _l3_log('Extracted ' + rows.length + ' row(s) from table "' + tableName + '".');
         } catch (e) {
-            _l3_log('ERROR reading table: ' + e.message);
+            _l3_log('ERROR: ' + e.message);
             _l3_setStatus('processing', 'Failed: ' + e.message);
             return;
         }
@@ -936,19 +1172,17 @@ async function _l3_exportIntermediate() {
     let csvOut = '';
     let rowCount = 0;
 
-    if (name.endsWith('.accdb') || name.endsWith('.mdb')) {
+    if (window.AccessAdapter.isAccessFile(file.name)) {
         if (!_l3_fileBuffer) {
-            _l3_log('ERROR: ACCDB buffer not loaded. Re-select the file.');
+            _l3_log('ERROR: Buffer not loaded. Re-select the file.');
             return;
         }
         const tableName = document.getElementById('l3-selected-table').value
                           || document.getElementById('l3-setting-table-name').value.trim()
-                          || 'INPUT_BASIC_ELEMENT_DATA';
+                          || window.ACCESS_IMPORT_CONFIG.defaultTable;
         try {
-            const { Database } = window.mdbReader;
-            const db = new Database(window.Buffer.from(_l3_fileBuffer));
-            const table = db.getTable(tableName);
-            const rows = table.getData();
+            _l3_log('Logic 3: parsing tables for CSV export...');
+            const rows = await window.AccessAdapter.parseAccessTables(_l3_fileBuffer, file.name, tableName, 'l3');
             csvOut = _l3_rowsToCSV(rows);
             rowCount = rows.length;
         } catch (e) {
@@ -1026,22 +1260,13 @@ async function _l2_onFileChange(event) {
 
     const name = file.name.toLowerCase();
 
-    if (name.endsWith('.accdb') || name.endsWith('.mdb')) {
-        _l2_log('Logic 2: Reading ACCDB: ' + file.name);
+    if (window.AccessAdapter.isAccessFile(file.name)) {
+        _l2_log('Logic 2: Reading Access file: ' + file.name);
         _l2_fileBuffer = await file.arrayBuffer();
-
-        if (!window.mdbReader || !window.Buffer) {
-            _l2_log('ERROR: mdb-reader not yet loaded. Refresh and try again.');
-            return;
-        }
         try {
-            const { Database } = window.mdbReader;
-            const db = new Database(window.Buffer.from(_l2_fileBuffer));
-            const tables = db.getTableNames();
-
+            const tables = await window.AccessAdapter.extractTableNames(_l2_fileBuffer);
             tableSelect.innerHTML = '';
-            const preferredTable = document.getElementById('l2-setting-table-name').value.trim()
-                                   || 'INPUT_BASIC_ELEMENT_DATA';
+            const preferredTable = document.getElementById('l2-setting-table-name').value.trim() || window.ACCESS_IMPORT_CONFIG.defaultTable;
             tables.forEach(t => {
                 const opt = document.createElement('option');
                 opt.value = t;
@@ -1049,13 +1274,11 @@ async function _l2_onFileChange(event) {
                 if (t === preferredTable) opt.selected = true;
                 tableSelect.appendChild(opt);
             });
-
             tableSelector.classList.remove('hidden');
             _l2_log('Logic 2: Found ' + tables.length + ' table(s). Select table then click Convert.');
         } catch (e) {
-            _l2_log('ERROR parsing ACCDB: ' + e.message);
+            _l2_log('ERROR extracting tables: ' + e.message);
         }
-
     } else if (name.endsWith('.csv')) {
         _l2_log('Logic 2: CSV file selected: ' + file.name);
         _l2_csvText = await file.text();
@@ -1100,24 +1323,25 @@ async function _l2_onConvertClick() {
     const file = fileInput.files[0];
     const name = file.name.toLowerCase();
 
-    if (name.endsWith('.accdb') || name.endsWith('.mdb')) {
+    if (window.AccessAdapter.isAccessFile(file.name)) {
         if (!_l2_fileBuffer) {
-            _l2_log('Logic 2 ERROR: ACCDB buffer not loaded. Re-select the file.');
+            _l2_log('Logic 2 ERROR: Buffer not loaded. Re-select the file.');
             return;
         }
         const tableName = document.getElementById('l2-selected-table').value
                           || document.getElementById('l2-setting-table-name').value.trim()
-                          || 'INPUT_BASIC_ELEMENT_DATA';
+                          || window.ACCESS_IMPORT_CONFIG.defaultTable;
         try {
-            const { Database } = window.mdbReader;
-            const db = new Database(window.Buffer.from(_l2_fileBuffer));
-            const table = db.getTable(tableName);
-            _l2_tableRows = table.getData();
+            const results = await window.AccessAdapter.parseAccessTables(_l2_fileBuffer, file.name, tableName, 'l2', (msg) => {
+                _l2_setStatus('processing', msg);
+                _l2_log(`Logic 2 Status: ${msg}`);
+            });
+            _l2_tableRows = results;
             window._l2_tableRows = _l2_tableRows;
             window._l2_inputFilename = file.name;
             _l2_log('Logic 2: Extracted ' + _l2_tableRows.length + ' row(s) from "' + tableName + '".');
         } catch (e) {
-            _l2_log('Logic 2 ERROR reading table: ' + e.message);
+            _l2_log('Logic 2 ERROR: ' + e.message);
             _l2_setStatus('processing', 'Failed: ' + e.message);
             return;
         }
@@ -1175,19 +1399,22 @@ async function _l1_onFileChange(event) {
     const name = file.name.toLowerCase();
     const statusEl = document.getElementById('l1-table-status');
 
-    if (name.endsWith('.accdb') || name.endsWith('.mdb')) {
+    if (window.AccessAdapter.isAccessFile(file.name)) {
         _l1_fileBuffer = await file.arrayBuffer();
-        if (!window.mdbReader || !window.Buffer) { _l1_log('Logic 1 ERROR: mdb-reader not ready.'); return; }
         try {
-            const { Database } = window.mdbReader;
-            const db = new Database(window.Buffer.from(_l1_fileBuffer));
-            const elemTable = db.getTable('INPUT_BASIC_ELEMENT_DATA');
-            _l1_tableRows = elemTable.getData();
+            const results = await window.AccessAdapter.parseAccessTables(_l1_fileBuffer, file.name, 'INPUT_BASIC_ELEMENT_DATA', 'l1', (msg) => {
+                if (statusEl) { statusEl.textContent = `Status: ${msg}`; statusEl.classList.remove('hidden'); }
+                _l1_log(`Logic 1 Status: ${msg}`);
+            });
+            _l1_tableRows = results;
             window._l1_elemRows = _l1_tableRows;
             window._l1_inputFilename = file.name;
             if (statusEl) { statusEl.textContent = 'ACCDB loaded: ' + _l1_tableRows.length + ' elements'; statusEl.classList.remove('hidden'); }
             _l1_log('Logic 1: Loaded ' + _l1_tableRows.length + ' elements from ' + file.name);
-        } catch(e) { _l1_log('Logic 1 ERROR: ' + e.message); }
+        } catch(e) {
+            _l1_log('Logic 1 ERROR: ' + e.message);
+            if (statusEl) { statusEl.textContent = 'Error: ' + e.message; statusEl.classList.remove('hidden'); }
+        }
     } else if (name.endsWith('.csv')) {
         _l1_csvText = await file.text();
         const lines = _l1_csvText.split(/\r?\n/).filter(l => l.trim());
@@ -1270,19 +1497,19 @@ async function _l4_onFileChange(event) {
     const name = file.name.toLowerCase();
     const statusEl = document.getElementById('l4-table-status');
 
-    if (name.endsWith('.accdb') || name.endsWith('.mdb')) {
+    if (window.AccessAdapter.isAccessFile(file.name)) {
         _l4_fileBuffer = await file.arrayBuffer();
-        if (!window.mdbReader || !window.Buffer) { _l4_log('Logic 4 ERROR: mdb-reader not ready.'); return; }
         try {
-            const { Database } = window.mdbReader;
-            const db = new Database(window.Buffer.from(_l4_fileBuffer));
+            const tableNames = L4_TABLES.map(t => t[0]);
+            const results = await window.AccessAdapter.parseAccessTables(_l4_fileBuffer, file.name, tableNames, 'l4', (msg) => {
+                if (statusEl) { statusEl.textContent = `Status: ${msg}`; statusEl.classList.remove('hidden'); }
+                _l4_log(`Logic 4 Status: ${msg}`);
+            });
             const counts = {};
             for (const [tbl, wk] of L4_TABLES) {
-                try {
-                    const rows = db.getTable(tbl).getData();
-                    window[wk] = rows;
-                    counts[tbl] = rows.length;
-                } catch(e) { window[wk] = []; counts[tbl] = 0; }
+                const rows = results[tbl] || [];
+                window[wk] = rows;
+                counts[tbl] = rows.length;
             }
             window._l4_inputFilename = file.name;
             const statusText = [
@@ -1294,7 +1521,10 @@ async function _l4_onFileChange(event) {
             ].join(' | ');
             if (statusEl) { statusEl.textContent = statusText; statusEl.classList.remove('hidden'); }
             _l4_log('Logic 4: ' + statusText);
-        } catch(e) { _l4_log('Logic 4 ERROR loading ACCDB: ' + e.message); }
+        } catch(e) {
+            _l4_log('Logic 4 ERROR loading Access file: ' + e.message);
+            if (statusEl) { statusEl.textContent = 'Error: ' + e.message; statusEl.classList.remove('hidden'); }
+        }
 
     } else if (name.endsWith('.csv')) {
         _l4_csvText = await file.text();
@@ -1371,52 +1601,6 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('l4-btn-apply-settings').addEventListener('click', _l4_onApplySettingsClick);
 });
 
-// Also handle the existing ACCDB table selector (was in original index.html)
-function parseAccessFile(buffer) {
-    try {
-        const { Database } = window.mdbReader;
-        const nodeBuffer = window.Buffer.from(buffer);
-        const db = new Database(nodeBuffer);
-        const tables = db.getTableNames();
-        if (!tables || tables.length === 0) throw new Error("No tables found in database");
-        const firstTable = db.getTable(tables[0]);
-        if (!firstTable) throw new Error("Cannot read first table");
-        return {
-            tables: tables,
-            primaryTable: tables[0],
-            rowCount: firstTable.getData().length
-        };
-    } catch (e) {
-        throw new Error("Access file parsing failed: " + e.message);
-    }
-}
-
-function extractAccessTableToCSV(buffer, tableName) {
-    try {
-        const { Database } = window.mdbReader;
-        const nodeBuffer = window.Buffer.from(buffer);
-        const db = new Database(nodeBuffer);
-        const table = db.getTable(tableName);
-        const data = table.getData();
-        if (!data || data.length === 0) throw new Error('Table "' + tableName + '" is empty');
-        const headers = Object.keys(data[0]);
-        if (headers.length === 0) throw new Error("Table has no columns");
-        let csv = headers.join(",") + "\n";
-        data.forEach(row => {
-            const values = headers.map(h => {
-                let v = row[h];
-                if (v === null || v === undefined) return "";
-                if (typeof v === "string" && (v.includes(",") || v.includes('"')))
-                    return '"' + v.replace(/"/g, '""') + '"';
-                return v;
-            });
-            csv += values.join(",") + "\n";
-        });
-        return csv;
-    } catch (e) {
-        throw new Error("CSV extraction failed: " + e.message);
-    }
-}
 
 // ================================================================
 // Per-logic Debug Inspectors
