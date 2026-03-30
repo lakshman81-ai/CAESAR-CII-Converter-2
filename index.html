@@ -21,6 +21,14 @@
             defaultTable: 'INPUT_BASIC_ELEMENT_DATA'
         };
 
+        window.getFallbackMethod = function(logic) {
+            try {
+                const el = document.getElementById(`${logic}-setting-fallback-method`);
+                if (el) return el.value;
+            } catch (e) {}
+            return 'default';
+        };
+
         window.AccessDiagnostics = {
             _diagnostics: [],
             emit: function(diag) {
@@ -273,6 +281,7 @@
                                 } else {
                                     formData.append('table', options.tableName || window.ACCESS_IMPORT_CONFIG.defaultTable);
                                 }
+                                formData.append('method', window.getFallbackMethod(logic));
 
                                 const response = await fetch(window.ACCESS_IMPORT_CONFIG.serverUrl, {
                                     method: 'POST',
@@ -420,6 +429,7 @@
                             const formData = new FormData();
                             formData.append('file', new Blob([arrayBuffer]), fileInfo.name);
                             formData.append('table', window.ACCESS_IMPORT_CONFIG.defaultTable); // Just to get metadata
+                            formData.append('method', window.getFallbackMethod(logic));
 
                             const response = await fetch(window.ACCESS_IMPORT_CONFIG.serverUrl, {
                                 method: 'POST',
@@ -604,6 +614,15 @@
                             <option value="false">No &mdash; Unix (LF only)</option>
                         </select>
                     </div>
+                    <div>
+                        <label class="block text-xs font-semibold text-gray-600 mb-1">Server Fallback Parser Method</label>
+                        <select id="l1-setting-fallback-method" class="w-full border border-gray-300 p-1.5 rounded text-sm bg-white">
+                            <option value="default" selected>Method 1 (Default / pyodbc)</option>
+                            <option value="ms-access-to-csv">Method 2 (ms-access-to-csv / C#)</option>
+                            <option value="accdbexport">Method 3 (accdbexport / R Jackcess)</option>
+                        </select>
+                        <p class="text-xs text-gray-400 mt-0.5">Parser used by local server fallback.</p>
+                    </div>
                 </div>
                 <button id="l1-btn-apply-settings"
                         class="bg-slate-600 text-white px-4 py-2 rounded hover:bg-slate-700 text-sm font-medium">
@@ -746,6 +765,15 @@
                             <option value="false">No — Unix (LF only)</option>
                         </select>
                     </div>
+                    <div>
+                        <label class="block text-xs font-semibold text-gray-600 mb-1">Server Fallback Parser Method</label>
+                        <select id="l2-setting-fallback-method" class="w-full border border-gray-300 p-1.5 rounded text-sm bg-white">
+                            <option value="default" selected>Method 1 (Default / pyodbc)</option>
+                            <option value="ms-access-to-csv">Method 2 (ms-access-to-csv / C#)</option>
+                            <option value="accdbexport">Method 3 (accdbexport / R Jackcess)</option>
+                        </select>
+                        <p class="text-xs text-gray-400 mt-0.5">Parser used by local server fallback.</p>
+                    </div>
                 </div>
                 <button id="l2-btn-apply-settings"
                         class="bg-slate-600 text-white px-4 py-2 rounded hover:bg-slate-700 text-sm font-medium">
@@ -872,6 +900,15 @@
                             <option value="default" selected>9999.99 — Use CAESAR II default</option>
                             <option value="custom">From ACCDB / CSV field</option>
                         </select>
+                    </div>
+                    <div>
+                        <label class="block text-xs font-semibold text-gray-600 mb-1">Server Fallback Parser Method</label>
+                        <select id="l3-setting-fallback-method" class="w-full border border-gray-300 p-1.5 rounded text-sm bg-white">
+                            <option value="default" selected>Method 1 (Default / pyodbc)</option>
+                            <option value="ms-access-to-csv">Method 2 (ms-access-to-csv / C#)</option>
+                            <option value="accdbexport">Method 3 (accdbexport / R Jackcess)</option>
+                        </select>
+                        <p class="text-xs text-gray-400 mt-0.5">Parser used by local server fallback.</p>
                     </div>
                     <div class="sm:col-span-2">
                         <label class="block text-xs font-semibold text-gray-600 mb-1">Benchmark Template</label>
@@ -1011,6 +1048,15 @@
                             <option value="true" selected>Yes &mdash; Windows/CAESAR II standard</option>
                             <option value="false">No &mdash; Unix (LF only)</option>
                         </select>
+                    </div>
+                    <div>
+                        <label class="block text-xs font-semibold text-gray-600 mb-1">Server Fallback Parser Method</label>
+                        <select id="l4-setting-fallback-method" class="w-full border border-gray-300 p-1.5 rounded text-sm bg-white">
+                            <option value="default" selected>Method 1 (Default / pyodbc)</option>
+                            <option value="ms-access-to-csv">Method 2 (ms-access-to-csv / C#)</option>
+                            <option value="accdbexport">Method 3 (accdbexport / R Jackcess)</option>
+                        </select>
+                        <p class="text-xs text-gray-400 mt-0.5">Parser used by local server fallback.</p>
                     </div>
                 </div>
                 <button id="l4-btn-apply-settings"
