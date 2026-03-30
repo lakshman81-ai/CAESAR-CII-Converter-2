@@ -37,6 +37,11 @@ def build_hybrid_cii(
     base_parsed_data: Optional[Dict] = None,
     use_dos_newlines: bool = True
 ) -> str:
+    import js
+    try:
+        sentinel_val = float(js.document.getElementById('l4-setting-sentinel').value)
+    except:
+        sentinel_val = -1.0101
     """
     Hybrid CII generation.
 
@@ -63,22 +68,22 @@ def build_hybrid_cii(
     aux_data = parsed_data.get("aux_data", {})
 
     if bend_rows:
-        aux_data["BEND"] = [format_bend_records(bend_rows)]
+        aux_data["BEND"] = [format_bend_records(bend_rows, sentinel_val=sentinel_val)]
 
     if rigid_rows:
-        aux_data["RIGID"] = [format_rigid_records(rigid_rows)]
+        aux_data["RIGID"] = [format_rigid_records(rigid_rows, sentinel_val=sentinel_val)]
 
     aux_data["EXPJT"] = aux_data.get("EXPJT", [[]])
 
     if rest_rows:
-        aux_data["RESTRANT"] = [format_restrant_records(rest_rows)]
+        aux_data["RESTRANT"] = [format_restrant_records(rest_rows, sentinel_val=sentinel_val)]
 
     # Always write ALLOWBLS standard defaults
     if not aux_data.get("ALLOWBLS"):
         aux_data["ALLOWBLS"] = [get_default_allowbls_block()]
 
     if sif_rows:
-        aux_data["SIF&TEES"] = [format_sif_records(sif_rows)]
+        aux_data["SIF&TEES"] = [format_sif_records(sif_rows, sentinel_val=sentinel_val)]
 
     parsed_data["aux_data"] = aux_data
 
@@ -305,24 +310,24 @@ def load_universal_csv(csv_path_or_df) -> Dict[str, Any]:
 
 # ─── Aux-data record formatters ───────────────────────────────────────────────
 
-def format_bend_records(bend_rows: List[Dict]) -> List[str]:
+def format_bend_records(bend_rows: List[Dict], sentinel_val: float = -1.0101) -> List[str]:
     """3 lines per BEND record. Confirmed ACCDB columns."""
     lines = []
     z = "     0.000000"
     for row in bend_rows:
-        g = lambda col: _fv(row.get(col, 0))
+        g = lambda col: _fv(row.get(col, 0), sentinel_val=sentinel_val)
         lines.append(f"  {g('RADIUS')}{g('ANGLE1')}{g('NODE1')}{g('ANGLE2')}{g('NODE2')}{g('ANGLE3')}")
         lines.append(f"  {g('NODE3')}{g('NUM_MITER')}{g('FIT_THICK')}{g('KFACTOR')}{g('WI_FACTOR')}{z}")
         lines.append(f"  {z}{z}")
     return lines
 
 
-def format_restrant_records(rest_rows: List[Dict]) -> List[str]:
+def format_restrant_records(rest_rows: List[Dict], sentinel_val: float = -1.0101) -> List[str]:
     """4 lines per RESTRANT record. Confirmed ACCDB columns."""
     lines = []
     z = "     0.000000"
     for row in rest_rows:
-        g = lambda col: _fv(row.get(col, 0))
+        g = lambda col: _fv(row.get(col, 0), sentinel_val=sentinel_val)
         lines.append(f"  {g('NODE_NUM')}{g('RES_TYPEID')}{g('STIFFNESS')}{g('GAP')}{g('FRIC_COEF')}{g('CNODE')}")
         lines.append(f"  {g('XCOSINE')}{g('YCOSINE')}{g('ZCOSINE')}")
         tag  = str(row.get("RES_TAG",  "") or "").strip()
@@ -338,24 +343,24 @@ def format_restrant_records(rest_rows: List[Dict]) -> List[str]:
     return lines
 
 
-def format_rigid_records(rigid_rows: List[Dict]) -> List[str]:
+def format_rigid_records(rigid_rows: List[Dict], sentinel_val: float = -1.0101) -> List[str]:
     """3 lines per RIGID record. Confirmed ACCDB columns."""
     lines = []
     z = "     0.000000"
     for row in rigid_rows:
-        wgt = _fv(row.get("RIGID_WGT", 0))
+        wgt = _fv(row.get("RIGID_WGT", 0), sentinel_val=sentinel_val)
         lines.append(f"  {wgt}{z}{z}{z}{z}{z}")  # line 1: weight + 5 zeros
         lines.append(f"  {z}{z}{z}{z}{z}{z}")     # line 2
         lines.append(f"  {z}")                     # line 3
     return lines
 
 
-def format_sif_records(sif_rows: List[Dict]) -> List[str]:
+def format_sif_records(sif_rows: List[Dict], sentinel_val: float = -1.0101) -> List[str]:
     """2 lines per SIF&TEES record. Confirmed ACCDB columns."""
     lines = []
     z = "     0.000000"
     for row in sif_rows:
-        g = lambda col: _fv(row.get(col, 0))
+        g = lambda col: _fv(row.get(col, 0), sentinel_val=sentinel_val)
         lines.append(f"  {g('SIF_NUM')}{g('NODE')}{g('TYPE')}{g('SIF_IN')}{g('SIF_OUT')}{g('SIF_TORSION')}")
         lines.append(f"  {g('SIF_AXIAL')}{g('SIF_PRESSURE')}{g('WELD_d')}{g('FILLET')}{g('PAD_THK')}{g('FTG_RO')}")
     return lines
@@ -375,12 +380,12 @@ def get_default_allowbls_block() -> List[str]:
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
-def _fv(val, width: int = 13) -> str:
+def _fv(val, width: int = 13, sentinel_val: float = -1.0101) -> str:
     """Format a value as 13-char Fortran-style float."""
     try:
         f = float(val)
         # Treat CAESAR II auto-calc sentinel as zero for aux records
-        if abs(f - (-1.0101)) < 0.001 or abs(f - (-1.01010000705719)) < 0.001:
+        if abs(f - (-1.0101)) < 0.001 or abs(f - (-1.01010000705719)) < 0.001 or abs(f - sentinel_val) < 0.001:
             return "     0.000000"
         if f == 0.0:
             return "     0.000000"
