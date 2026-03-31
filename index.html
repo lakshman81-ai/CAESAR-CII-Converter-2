@@ -80,6 +80,23 @@
                     data.push(obj);
                 }
                 return data;
+            },
+
+            async parseMultiple(files) {
+                const tablesData = {};
+                const tablesList = [];
+                for (let i = 0; i < files.length; i++) {
+                    const file = files[i];
+                    if (!file.name.toLowerCase().endsWith('.csv')) continue;
+
+                    const text = await file.text();
+                    const rows = this.parse(text);
+                    const tableName = file.name.replace(/\.[^/.]+$/, ""); // Remove extension
+
+                    tablesData[tableName] = rows;
+                    tablesList.push(tableName);
+                }
+                return { tablesData, tablesList };
             }
         };
 
@@ -563,10 +580,10 @@
                 <h3 class="text-sm font-semibold mb-3 text-gray-700">Output / Processing &mdash; Convert to .CII</h3>
                 <div class="flex flex-col gap-4">
                     <div>
-                        <label class="block text-sm font-medium mb-1">Select Input File (.accdb, .mdb, or Universal CSV)</label>
-                        <input type="file" id="l1-upload" accept=".accdb,.mdb,.csv"
+                        <label class="block text-sm font-medium mb-1">Select Input File(s) (.accdb, .mdb, or multiple .csv files)</label>
+                        <input type="file" id="l1-upload" accept=".accdb,.mdb,.csv" multiple
                                class="block w-full border border-gray-300 p-2 rounded text-sm bg-white">
-                        <p class="text-xs text-gray-500 mt-1">ACCDB: extracts INPUT_BASIC_ELEMENT_DATA automatically. CSV: must be a Universal CSV from Logic 4.</p>
+                        <p class="text-xs text-gray-500 mt-1">ACCDB: extracts INPUT_BASIC_ELEMENT_DATA automatically. CSV: Select a single Universal CSV or multiple individual CSVs.</p>
                     </div>
                     <div id="l1-table-status" class="hidden p-2 bg-slate-100 rounded text-xs text-slate-700"></div>
                     <div class="flex gap-3 items-center flex-wrap">
@@ -688,8 +705,8 @@
                 <h3 class="text-sm font-semibold mb-3 text-gray-700">Output / Processing — Convert to .CII</h3>
                 <div class="flex flex-col gap-4">
                     <div>
-                        <label class="block text-sm font-medium mb-1">Select Input File (.accdb, .mdb, .csv)</label>
-                        <input type="file" id="l2-upload" accept=".accdb,.mdb,.csv"
+                        <label class="block text-sm font-medium mb-1">Select Input File(s) (.accdb, .mdb, or multiple .csv files)</label>
+                        <input type="file" id="l2-upload" accept=".accdb,.mdb,.csv" multiple
                                class="block w-full border border-gray-300 p-2 rounded text-sm bg-white">
                     </div>
                     <div id="l2-table-selector" class="hidden">
@@ -839,8 +856,8 @@
                 <h3 class="text-sm font-semibold mb-3 text-gray-700">Output / Processing — Convert to .CII</h3>
                 <div class="flex flex-col gap-4">
                     <div>
-                        <label class="block text-sm font-medium mb-1">Select Input File (.accdb, .mdb, .csv)</label>
-                        <input type="file" id="l3-upload" accept=".accdb,.mdb,.csv"
+                        <label class="block text-sm font-medium mb-1">Select Input File(s) (.accdb, .mdb, or multiple .csv files)</label>
+                        <input type="file" id="l3-upload" accept=".accdb,.mdb,.csv" multiple
                                class="block w-full border border-gray-300 p-2 rounded text-sm bg-white">
                     </div>
                     <div id="l3-table-selector" class="hidden">
@@ -977,10 +994,10 @@
                 <h3 class="text-sm font-semibold mb-3 text-gray-700">Output / Processing &mdash; Convert to .CII</h3>
                 <div class="flex flex-col gap-4">
                     <div>
-                        <label class="block text-sm font-medium mb-1">Select Input File (.accdb, .mdb, or Universal CSV)</label>
-                        <input type="file" id="l4-upload" accept=".accdb,.mdb,.csv"
+                        <label class="block text-sm font-medium mb-1">Select Input File(s) (.accdb, .mdb, or multiple .csv files)</label>
+                        <input type="file" id="l4-upload" accept=".accdb,.mdb,.csv" multiple
                                class="block w-full border border-gray-300 p-2 rounded text-sm bg-white">
-                        <p class="text-xs text-gray-500 mt-1">ACCDB: all 5 INPUT_* tables are extracted automatically. Universal CSV: re-generates CII with no ACCDB required.</p>
+                        <p class="text-xs text-gray-500 mt-1">ACCDB/Multiple CSVs: all 5 INPUT_* tables are extracted automatically. Single Universal CSV: re-generates CII with no ACCDB required.</p>
                     </div>
                     <div id="l4-table-status" class="hidden p-3 bg-emerald-50 border border-emerald-200 rounded text-xs text-emerald-800 font-mono">
                         <!-- populated by _l4_onFileChange -->
@@ -1361,13 +1378,34 @@ async function _l3_onFileChange(event) {
     _l3_csvText    = null;
     window.AppState.logic3.tableRows = null;
 
-    const file = event.target.files[0];
-    if (!file) return;
+    const files = event.target.files;
+    if (!files || files.length === 0) return;
 
     const tableSelector = document.getElementById('l3-table-selector');
     const tableSelect   = document.getElementById('l3-selected-table');
     tableSelector.classList.add('hidden');
 
+    if (files.length > 1) {
+        _l3_log(`Logic 3: Processing ${files.length} multiple CSV files...`);
+        const { tablesData, tablesList } = await window.CSVAdapter.parseMultiple(files);
+        window.AppState.logic3.tablesData = tablesData;
+        window.AppState.logic3.inputFilename = 'multiple_csv_files';
+
+        tableSelect.innerHTML = '';
+        const preferredTable = document.getElementById('l3-setting-table-name').value.trim() || window.ACCESS_IMPORT_CONFIG.defaultTable;
+        tablesList.forEach(t => {
+            const opt = document.createElement('option');
+            opt.value = t;
+            opt.textContent = t;
+            if (t.toUpperCase().includes('ELEMENT_DATA') || t === preferredTable) opt.selected = true;
+            tableSelect.appendChild(opt);
+        });
+        tableSelector.classList.remove('hidden');
+        _l3_log('Logic 3: Loaded multiple CSVs. Select table then click Convert.');
+        return;
+    }
+
+    const file = files[0];
     const name = file.name.toLowerCase();
 
     if (window.AccessAdapter.isAccessFile(file.name)) {
@@ -1409,39 +1447,53 @@ async function _l3_convert() {
         return;
     }
 
-    const file = fileInput.files[0];
-    const name = file.name.toLowerCase();
-    let rows = null;
+    const tableName = document.getElementById('l3-selected-table').value
+                      || document.getElementById('l3-setting-table-name').value.trim()
+                      || window.ACCESS_IMPORT_CONFIG.defaultTable;
 
-    if (window.AccessAdapter.isAccessFile(file.name)) {
-        if (!_l3_fileBuffer) {
-            _l3_log('ERROR: Buffer not loaded. Re-select the file.');
+    let rows = null;
+    let fileName = 'multiple_csvs';
+
+    if (fileInput.files.length > 1) {
+        if (!window.AppState.logic3.tablesData || !window.AppState.logic3.tablesData[tableName]) {
+            _l3_log(`ERROR: Table ${tableName} not loaded from selected CSVs.`);
             return;
         }
-        const tableName = document.getElementById('l3-selected-table').value
-                          || document.getElementById('l3-setting-table-name').value.trim()
-                          || window.ACCESS_IMPORT_CONFIG.defaultTable;
-        try {
-            const response = await window.AccessAdapter.parseAccessTables(_l3_fileBuffer, { tableName }, { name: file.name, size: file.size }, 'l3', (msg) => {
-                _l3_setStatus('processing', msg);
-                _l3_log(`Logic 3 Status: ${msg}`);
-            });
-            window.AppState.logic3.tableRows = response.tablesData[tableName];
-            _l3_log('Extracted ' + window.AppState.logic3.tableRows.length + ' row(s) from table "' + tableName + '".');
-        } catch (e) {
-            _l3_log('ERROR: ' + e.message);
-            _l3_setStatus('processing', 'Failed: ' + e.message);
-            return;
-        }
-    } else if (name.endsWith('.csv')) {
-        if (!window.AppState.logic3.tableRows) {
-            _l3_log('ERROR: CSV not loaded. Re-select the file.');
-            return;
-        }
-        rows = window.AppState.logic3.tableRows;
+        rows = window.AppState.logic3.tablesData[tableName];
+        window.AppState.logic3.tableRows = rows;
     } else {
-        _l3_log('ERROR: Unsupported file type.');
-        return;
+        const file = fileInput.files[0];
+        fileName = file.name;
+        const name = file.name.toLowerCase();
+
+        if (window.AccessAdapter.isAccessFile(file.name)) {
+            if (!_l3_fileBuffer) {
+                _l3_log('ERROR: Buffer not loaded. Re-select the file.');
+                return;
+            }
+            try {
+                const response = await window.AccessAdapter.parseAccessTables(_l3_fileBuffer, { tableName }, { name: file.name, size: file.size }, 'l3', (msg) => {
+                    _l3_setStatus('processing', msg);
+                    _l3_log(`Logic 3 Status: ${msg}`);
+                });
+                window.AppState.logic3.tableRows = response.tablesData[tableName];
+                _l3_log('Extracted ' + window.AppState.logic3.tableRows.length + ' row(s) from table "' + tableName + '".');
+                rows = window.AppState.logic3.tableRows;
+            } catch (e) {
+                _l3_log('ERROR: ' + e.message);
+                _l3_setStatus('processing', 'Failed: ' + e.message);
+                return;
+            }
+        } else if (name.endsWith('.csv')) {
+            if (!window.AppState.logic3.tableRows) {
+                _l3_log('ERROR: CSV not loaded. Re-select the file.');
+                return;
+            }
+            rows = window.AppState.logic3.tableRows;
+        } else {
+            _l3_log('ERROR: Unsupported file type.');
+            return;
+        }
     }
 
     if (!rows || rows.length === 0) {
@@ -1453,7 +1505,7 @@ async function _l3_convert() {
     _l3_log('Running Logic3_generateFinal on ' + rows.length + ' element(s)...');
     try {
         const ciiText = Logic3_generateFinal(rows, Logic3_BENCHMARK_BLOCKS);
-        const outName = file.name.replace(/\.(accdb|mdb|csv)$/i, '') + '.cii';
+        const outName = fileName.replace(/\.(accdb|mdb|csv)$/i, '') + '.cii';
         _l3_downloadText(ciiText, outName, 'text/plain');
         _l3_log('SUCCESS: Downloaded ' + outName + ' (' + ciiText.length + ' bytes).');
         _l3_setStatus('processing', 'Downloaded ' + outName);
@@ -1554,13 +1606,34 @@ async function _l2_onFileChange(event) {
     _l2_csvText    = null;
     window.AppState.logic2.tableRows = null;
 
-    const file = event.target.files[0];
-    if (!file) return;
+    const files = event.target.files;
+    if (!files || files.length === 0) return;
 
     const tableSelector = document.getElementById('l2-table-selector');
     const tableSelect   = document.getElementById('l2-selected-table');
     tableSelector.classList.add('hidden');
 
+    if (files.length > 1) {
+        _l2_log(`Logic 2: Processing ${files.length} multiple CSV files...`);
+        const { tablesData, tablesList } = await window.CSVAdapter.parseMultiple(files);
+        window.AppState.logic2.tablesData = tablesData;
+        window.AppState.logic2.inputFilename = 'multiple_csv_files';
+
+        tableSelect.innerHTML = '';
+        const preferredTable = document.getElementById('l2-setting-table-name').value.trim() || window.ACCESS_IMPORT_CONFIG.defaultTable;
+        tablesList.forEach(t => {
+            const opt = document.createElement('option');
+            opt.value = t;
+            opt.textContent = t;
+            if (t.toUpperCase().includes('ELEMENT_DATA') || t === preferredTable) opt.selected = true;
+            tableSelect.appendChild(opt);
+        });
+        tableSelector.classList.remove('hidden');
+        _l2_log('Logic 2: Loaded multiple CSVs. Select table then click Convert.');
+        return;
+    }
+
+    const file = files[0];
     const name = file.name.toLowerCase();
 
     if (window.AccessAdapter.isAccessFile(file.name)) {
@@ -1614,36 +1687,46 @@ async function _l2_onConvertClick() {
         return;
     }
 
-    const file = fileInput.files[0];
-    const name = file.name.toLowerCase();
+    const tableName = document.getElementById('l2-selected-table').value
+                      || document.getElementById('l2-setting-table-name').value.trim()
+                      || window.ACCESS_IMPORT_CONFIG.defaultTable;
 
-    if (window.AccessAdapter.isAccessFile(file.name)) {
-        if (!_l2_fileBuffer) {
-            _l2_log('Logic 2 ERROR: Buffer not loaded. Re-select the file.');
+    if (fileInput.files.length > 1) {
+        if (!window.AppState.logic2.tablesData || !window.AppState.logic2.tablesData[tableName]) {
+            _l2_log(`Logic 2 ERROR: Table ${tableName} not loaded from selected CSVs.`);
             return;
         }
-        const tableName = document.getElementById('l2-selected-table').value
-                          || document.getElementById('l2-setting-table-name').value.trim()
-                          || window.ACCESS_IMPORT_CONFIG.defaultTable;
-        try {
-            const response = await window.AccessAdapter.parseAccessTables(_l2_fileBuffer, { tableName }, { name: file.name, size: file.size }, 'l2', (msg) => {
-                _l2_setStatus('processing', msg);
-                _l2_log(`Logic 2 Status: ${msg}`);
-            });
-            window.AppState.logic2.tableRows = response.tablesData[tableName];
+        window.AppState.logic2.tableRows = window.AppState.logic2.tablesData[tableName];
+        _l2_log(`Logic 2: Selected ${window.AppState.logic2.tableRows.length} row(s) from "${tableName}" CSV.`);
+    } else {
+        const file = fileInput.files[0];
+        const name = file.name.toLowerCase();
+
+        if (window.AccessAdapter.isAccessFile(file.name)) {
+            if (!_l2_fileBuffer) {
+                _l2_log('Logic 2 ERROR: Buffer not loaded. Re-select the file.');
+                return;
+            }
+            try {
+                const response = await window.AccessAdapter.parseAccessTables(_l2_fileBuffer, { tableName }, { name: file.name, size: file.size }, 'l2', (msg) => {
+                    _l2_setStatus('processing', msg);
+                    _l2_log(`Logic 2 Status: ${msg}`);
+                });
+                window.AppState.logic2.tableRows = response.tablesData[tableName];
+                window.AppState.logic2.inputFilename = file.name;
+                _l2_log('Logic 2: Extracted ' + window.AppState.logic2.tableRows.length + ' row(s) from "' + tableName + '".');
+            } catch (e) {
+                _l2_log('Logic 2 ERROR: ' + e.message);
+                _l2_setStatus('processing', 'Failed: ' + e.message);
+                return;
+            }
+        } else if (name.endsWith('.csv')) {
+            if (!window.AppState.logic2.tableRows) {
+                _l2_log('Logic 2 ERROR: CSV not loaded. Re-select the file.');
+                return;
+            }
             window.AppState.logic2.inputFilename = file.name;
-            _l2_log('Logic 2: Extracted ' + window.AppState.logic2.tableRows.length + ' row(s) from "' + tableName + '".');
-        } catch (e) {
-            _l2_log('Logic 2 ERROR: ' + e.message);
-            _l2_setStatus('processing', 'Failed: ' + e.message);
-            return;
         }
-    } else if (name.endsWith('.csv')) {
-        if (!_l2_tableRows) {
-            _l2_log('Logic 2 ERROR: CSV not loaded. Re-select the file.');
-            return;
-        }
-        window._l2_inputFilename = file.name;
     }
 
     // Trigger PyScript convert (dispatched as custom event)
@@ -1684,10 +1767,30 @@ function _l1_setStatus(panel, msg) {
 async function _l1_onFileChange(event) {
     _l1_fileBuffer = null; _l1_csvText = null;
     window.AppState.logic1.elemRows = null;
-    const file = event.target.files[0];
-    if (!file) return;
-    const name = file.name.toLowerCase();
+
+    const files = event.target.files;
+    if (!files || files.length === 0) return;
     const statusEl = document.getElementById('l1-table-status');
+
+    if (files.length > 1) {
+        _l1_log(`Logic 1: Processing ${files.length} multiple CSV files...`);
+        const { tablesData } = await window.CSVAdapter.parseMultiple(files);
+
+        let elemTableKey = Object.keys(tablesData).find(k => k.toUpperCase().includes('ELEMENT_DATA')) || Object.keys(tablesData)[0];
+
+        if (tablesData[elemTableKey] && tablesData[elemTableKey].length > 0) {
+            window.AppState.logic1.elemRows = tablesData[elemTableKey];
+            window.AppState.logic1.inputFilename = elemTableKey + '.csv';
+            if (statusEl) { statusEl.textContent = `CSV Bundle Loaded: ${window.AppState.logic1.elemRows.length} elements from ${elemTableKey}`; statusEl.classList.remove('hidden'); }
+            _l1_log(`Logic 1: Loaded ${window.AppState.logic1.elemRows.length} elements from multiple files selection`);
+        } else {
+             _l1_log('Logic 1 ERROR: No valid element data found in uploaded files.');
+        }
+        return;
+    }
+
+    const file = files[0];
+    const name = file.name.toLowerCase();
 
     if (window.AccessAdapter.isAccessFile(file.name)) {
         _l1_fileBuffer = await file.arrayBuffer();
@@ -1766,10 +1869,36 @@ async function _l4_onFileChange(event) {
     L4_TABLES.forEach(([, wk]) => { window.AppState.logic4[wk] = null; });
     _l4_fileBuffer = null; _l4_csvText = null;
 
-    const file = event.target.files[0];
-    if (!file) return;
-    const name = file.name.toLowerCase();
+    const files = event.target.files;
+    if (!files || files.length === 0) return;
     const statusEl = document.getElementById('l4-table-status');
+
+    if (files.length > 1) {
+        _l4_log(`Logic 4: Processing ${files.length} multiple CSV files...`);
+        const { tablesData } = await window.CSVAdapter.parseMultiple(files);
+        const counts = {};
+        for (const [tbl, wk] of L4_TABLES) {
+            // Find closest match in uploaded CSV filenames
+            const fileKey = Object.keys(tablesData).find(k => k.toUpperCase().includes(tbl) || tbl.includes(k.toUpperCase()));
+            const rows = fileKey ? tablesData[fileKey] : [];
+            window.AppState.logic4[wk] = rows;
+            counts[tbl] = rows.length;
+        }
+        window.AppState.logic4.inputFilename = 'multiple_csv_files';
+        const statusText = [
+            'Elements: ' + (counts['INPUT_BASIC_ELEMENT_DATA'] || 0),
+            'Bends: '    + (counts['INPUT_BENDS'] || 0),
+            'Restraints: ' + (counts['INPUT_RESTRAINTS'] || 0),
+            'Rigids: '   + (counts['INPUT_RIGIDS'] || 0),
+            'SIFs: '     + (counts['INPUT_SIFTEES'] || 0)
+        ].join(' | ');
+        if (statusEl) { statusEl.textContent = statusText; statusEl.classList.remove('hidden'); }
+        _l4_log('Logic 4: ' + statusText);
+        return;
+    }
+
+    const file = files[0];
+    const name = file.name.toLowerCase();
 
     if (window.AccessAdapter.isAccessFile(file.name)) {
         _l4_fileBuffer = await file.arrayBuffer();
