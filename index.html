@@ -640,6 +640,8 @@
                 <option value="logic3" selected>Logic 3 — ACCDB / CSV → CII (JS)</option>
                 <option value="logic4">Logic 4 — Hybrid (Multi-Table + Full Aux)</option>
             </select>
+            <button onclick="switchMainTab('tab-accdb-tools')"
+                    class="text-sm text-blue-700 underline hover:text-blue-900 whitespace-nowrap mr-2">Access &#8594; CSV</button>
             <button onclick="switchMainTab('tab-cii-tools')"
                     class="text-sm text-blue-700 underline hover:text-blue-900 whitespace-nowrap">CII Format Fixer</button>
         </div>
@@ -658,6 +660,9 @@
             <button id="tab-btn-logic4"
                     class="main-tab-btn px-5 py-2 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-800 hover:border-gray-400"
                     onclick="switchMainTab('tab-logic4')">Logic 4 &#9889;</button>
+            <button id="tab-btn-accdb-tools"
+                    class="main-tab-btn px-5 py-2 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-800 hover:border-gray-400"
+                    onclick="switchMainTab('tab-accdb-tools')">Access &#8594; CSV</button>
             <button id="tab-btn-cii-tools"
                     class="main-tab-btn px-5 py-2 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-800 hover:border-gray-400"
                     onclick="switchMainTab('tab-cii-tools')">CII Format Fixer</button>
@@ -1223,6 +1228,34 @@
         </div>
 
         <!-- ================================================================ -->
+        <!-- ===== ACCDB TOOLS TAB ===== -->
+        <!-- ================================================================ -->
+        <div id="tab-accdb-tools" class="main-tab-panel hidden">
+            <div class="border border-gray-300 rounded-lg p-5 mb-5 bg-gray-50">
+                <h1 class="text-lg font-semibold mb-4 border-b pb-2 text-gray-800">&#128452; Access &#8594; CSV Converter</h1>
+                <p class="text-sm text-gray-600 mb-6">
+                    Every table exports as its own CSV, packaged in a ZIP.<br>
+                    <strong>Fully offline</strong> &#8212; no internet, no server, no install.
+                    File never leaves your machine.
+                </p>
+                <div class="border-2 border-dashed border-blue-300 rounded-lg p-10 text-center cursor-pointer transition-colors bg-white hover:border-blue-500 hover:bg-blue-50 relative" id="dz">
+                    <input type="file" id="fi" accept=".accdb,.mdb" class="absolute inset-0 opacity-0 cursor-pointer w-full h-full">
+                    <div class="text-4xl mb-2">&#128194;</div>
+                    <div class="text-sm font-medium text-gray-700">Click or drag &amp; drop your .accdb / .mdb file</div>
+                    <div class="text-xs text-gray-500 mt-1">Works offline &#183; No data sent anywhere</div>
+                </div>
+                <div class="mt-4 hidden" id="pw">
+                    <div class="bg-gray-200 rounded-full h-2 overflow-hidden"><div class="h-full bg-gradient-to-r from-blue-500 to-purple-600 rounded-full w-0 transition-all duration-300" id="pf"></div></div>
+                    <div class="text-xs text-gray-600 mt-1 text-right" id="pl">Starting...</div>
+                </div>
+                <div class="mt-4 bg-slate-900 rounded-lg p-3 max-h-64 overflow-y-auto hidden font-mono text-xs leading-relaxed text-slate-300 break-all whitespace-pre-wrap" id="lb"></div>
+                <div class="hidden gap-2 mt-4 flex-wrap" id="sum"></div>
+                <button class="hidden mt-4 w-full p-3 bg-gradient-to-r from-blue-500 to-purple-600 text-white text-sm font-semibold border-none rounded-lg cursor-pointer transition-opacity hover:opacity-90" id="dlBtn">Download CSVs as ZIP</button>
+                <div class="hidden mt-3 text-sm text-blue-600 cursor-pointer text-center hover:underline" id="rst" onclick="resetAccdbUI()">&#8617; Convert another file</div>
+            </div>
+        </div>
+
+        <!-- ================================================================ -->
         <!-- ===== CII TOOLS TAB ===== -->
         <!-- ================================================================ -->
         <div id="tab-cii-tools" class="main-tab-panel hidden">
@@ -1359,6 +1392,7 @@
         "./comparator.py",
         "./optimizer.py",
         "./optimizer_settings.py",
+        "./logger.py",
         "./Logic2_config.py",
         "./Logic2_parser.py",
         "./Logic2_serializer.py",
@@ -1405,6 +1439,9 @@ function switchMainTab(tabId) {
     const dd = document.getElementById('logic-dropdown');
     if (dd && ['logic1','logic2','logic3','logic4'].includes(logicKey)) {
         dd.value = logicKey;
+    }
+    if (logicKey === 'accdb-tools') {
+        if (typeof resetAccdbUI === 'function') resetAccdbUI();
     }
 }
 
@@ -2214,6 +2251,166 @@ function _l3_testGenerate() {
         out.textContent = 'ERROR during test generation:\n' + e.message + '\n' + (e.stack || '');
     }
 }
+
+// ── Access -> CSV Converter Tab Logic ─────────────────────────────────────────
+
+let zipBlob = null;
+
+function logAccdb(msg, cls){
+    const lb = document.getElementById("lb");
+    if(!lb) return;
+    lb.style.display="block";
+    const p=document.createElement("p");
+    if(cls) p.className=cls;
+    p.textContent=msg;
+    lb.appendChild(p);
+    lb.scrollTop=lb.scrollHeight;
+}
+function setAccdbProgress(pct, label){
+    const pw = document.getElementById("pw"), pf = document.getElementById("pf"), pl = document.getElementById("pl");
+    if(!pw || !pf || !pl) return;
+    pw.style.display="block";
+    pf.style.width=pct+"%";
+    pl.textContent=label;
+}
+function escCSV(v){
+    if(v===null||v===undefined)return '""';
+    if(v instanceof Date)return '"'+v.toISOString().replace(/"/g,'""')+'"';
+    return '"'+String(v).replace(/"/g,'""')+'"';
+}
+function safeName(s){return s.replace(/[\\/:*?"<>|]/g,"_");}
+
+async function processAccdbFile(file){
+    const dz = document.getElementById("dz"), sum = document.getElementById("sum"), dlBtn = document.getElementById("dlBtn"), rst = document.getElementById("rst");
+    const ext = file.name.split(".").pop().toLowerCase();
+    if(!["accdb","mdb"].includes(ext)){
+        logAccdb("Please select a .accdb or .mdb file.","text-red-400");return;
+    }
+    if(dz) dz.style.display="none";
+    logAccdb("File : "+file.name,"text-blue-300");
+    logAccdb("Size : "+(file.size/1024).toFixed(1)+" KB","text-blue-300");
+    setAccdbProgress(5,"Reading file...");
+
+    if(!window.mdbReader || !window.Buffer){
+        logAccdb("Bundle load error — libraries not ready","text-red-400");
+        if(rst) rst.style.display="block";return;
+    }
+
+    let arrayBuf;
+    try{arrayBuf=await file.arrayBuffer();}
+    catch(e){logAccdb("Could not read file: "+e.message,"text-red-400");return;}
+
+    setAccdbProgress(15,"Parsing database...");
+    let reader;
+    try{
+        const buf = window.Buffer.from(new Uint8Array(arrayBuf));
+        reader = new window.mdbReader.Database(buf);
+    }
+    catch(e){
+        logAccdb("Failed to parse database: "+e.message,"text-red-400");
+        logAccdb("  - Password-protected files are not supported","text-red-400");
+        logAccdb("  - File may be corrupted or unsupported version","text-red-400");
+        if(rst) rst.style.display="block";return;
+    }
+
+    let tables;
+    try{tables=reader.getTableNames({systemTables:false});}
+    catch(_){
+        try{tables=reader.getTableNames();}
+        catch(e){logAccdb("Cannot read table list: "+e.message,"text-red-400");return;}
+    }
+
+    if(!tables||tables.length===0){
+        logAccdb("No user tables found.","text-yellow-300");
+        if(rst) rst.style.display="block";return;
+    }
+
+    logAccdb("\nFound "+tables.length+" table(s)","text-blue-300");
+    logAccdb("------------------------------------------------","text-blue-300");
+
+    const zip = new window.JSZip();
+    const folderName = safeName(file.name.replace(/\.[^.]+$/,""));
+    const folder = zip.folder(folderName);
+    let nOK=0, nEmpty=0, nFail=0;
+
+    for(let i=0;i<tables.length;i++){
+        const tbl=tables[i];
+        setAccdbProgress(15+Math.round((i/tables.length)*75),(i+1)+"/"+tables.length+": "+tbl);
+        try{
+            const table=reader.getTable(tbl);
+            const cols=table.getColumnNames();
+            const rows=table.getData();
+            const lines=[cols.map(escCSV).join(",")];
+            for(const row of rows)lines.push(cols.map(c=>escCSV(row[c])).join(","));
+            folder.file(safeName(tbl)+".csv",lines.join("\r\n")+"\r\n");
+            if(rows.length===0){logAccdb("EMPTY ["+tbl+"]","text-yellow-300");nEmpty++;}
+            else{logAccdb("OK    ["+rows.length+" rows]: "+tbl,"text-green-400");nOK++;}
+        }catch(e){logAccdb("FAIL  ["+tbl+"]: "+e.message,"text-red-400");nFail++;}
+        await new Promise(r=>setTimeout(r,0));
+    }
+
+    setAccdbProgress(95,"Building ZIP...");
+    zipBlob=await zip.generateAsync({
+        type:"blob",compression:"DEFLATE",compressionOptions:{level:6}
+    });
+    setAccdbProgress(100,"Done!");
+    logAccdb("------------------------------------------------","text-blue-300");
+    logAccdb("Complete: "+nOK+" with data  |  "+nEmpty+" empty  |  "+nFail+" failed","text-green-400");
+
+    if(sum) {
+        sum.style.display="flex";
+        sum.innerHTML=
+            '<span class="px-3 py-1 rounded-full text-xs font-semibold bg-green-100 text-green-800">\u2705 '+nOK+' with data</span>'+
+            (nEmpty?'<span class="px-3 py-1 rounded-full text-xs font-semibold bg-yellow-100 text-yellow-800">\u26a0\ufe0f '+nEmpty+' empty</span>':'')+
+            (nFail ?'<span class="px-3 py-1 rounded-full text-xs font-semibold bg-red-100 text-red-800">\u274c '+nFail+' failed</span>':'');
+    }
+
+    if(dlBtn) {
+        dlBtn.textContent="\u2b07\ufe0f Download "+folderName+".zip";
+        dlBtn.style.display="block";
+        dlBtn.onclick=()=>{
+            const a=document.createElement("a");
+            a.href=URL.createObjectURL(zipBlob);
+            a.download=folderName+".zip";
+            a.click();
+            URL.revokeObjectURL(a.href);
+        };
+    }
+    if(rst) rst.style.display="block";
+}
+
+function resetAccdbUI(){
+    const dz = document.getElementById("dz"), fi = document.getElementById("fi");
+    const pw = document.getElementById("pw"), pf = document.getElementById("pf");
+    const lb = document.getElementById("lb"), sum = document.getElementById("sum");
+    const dlBtn = document.getElementById("dlBtn"), rst = document.getElementById("rst");
+    zipBlob=null;
+    if(lb) {lb.innerHTML="";lb.style.display="none";}
+    if(sum) {sum.style.display="none";sum.innerHTML="";}
+    if(dlBtn) dlBtn.style.display="none";
+    if(pw) pw.style.display="none";
+    if(pf) pf.style.width="0%";
+    if(rst) rst.style.display="none";
+    if(dz) dz.style.display="block";
+    if(fi) fi.value="";
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+    const dz = document.getElementById("dz");
+    const fi = document.getElementById("fi");
+    if(dz) {
+        dz.addEventListener("dragover",e=>{e.preventDefault();dz.classList.add("border-blue-500", "bg-blue-50")});
+        dz.addEventListener("dragleave",()=>dz.classList.remove("border-blue-500", "bg-blue-50"));
+        dz.addEventListener("drop",e=>{
+            e.preventDefault();dz.classList.remove("border-blue-500", "bg-blue-50");
+            if(e.dataTransfer.files[0])processAccdbFile(e.dataTransfer.files[0]);
+        });
+    }
+    if(fi) {
+        fi.addEventListener("change",e=>{if(e.target.files[0])processAccdbFile(e.target.files[0])});
+    }
+});
+
 
 // ── Logic 4: JS global inspector ──────────────────────────────────────────────
 function _l4_inspectJS() {
