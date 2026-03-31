@@ -6,6 +6,7 @@
     <title>CAESAR II Neutral File Tools</title>
     <!-- TailWind CSS for styling -->
     <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/jszip/dist/jszip.min.js"></script>
     <!-- mdb-reader library (ACCDB parsing, browser-side) -->
     <script type="module">
         import Database from "https://cdn.jsdelivr.net/npm/mdb-reader/+esm";
@@ -830,12 +831,6 @@
                         <label class="block text-sm font-medium mb-1">Select Input File(s) (.accdb, .mdb, or multiple .csv files)</label>
                         <input type="file" id="l2-upload" accept=".accdb,.mdb,.csv" multiple
                                class="block w-full border border-gray-300 p-2 rounded text-sm bg-white">
-                    </div>
-                    <div id="l2-table-selector" class="hidden">
-                        <label class="block text-sm font-medium mb-1">Select Table from Database</label>
-                        <select id="l2-selected-table"
-                                class="block w-full border border-gray-300 p-2 rounded text-sm bg-white"></select>
-                        <p class="text-xs text-gray-500 mt-1">Default: INPUT_BASIC_ELEMENT_DATA</p>
                     </div>
                     <div>
                         <label class="block text-sm font-medium mb-1">Base .CII File (optional — for merge mode)</label>
@@ -1763,27 +1758,13 @@ async function _l2_onFileChange(event) {
     const files = event.target.files;
     if (!files || files.length === 0) return;
 
-    const tableSelector = document.getElementById('l2-table-selector');
-    const tableSelect   = document.getElementById('l2-selected-table');
-    tableSelector.classList.add('hidden');
-
     if (files.length > 1) {
         _l2_log(`Logic 2: Processing ${files.length} multiple CSV files...`);
         const { tablesData, tablesList } = await window.CSVAdapter.parseMultiple(files);
         window.AppState.logic2.tablesData = tablesData;
         window.AppState.logic2.inputFilename = 'multiple_csv_files';
 
-        tableSelect.innerHTML = '';
-        const preferredTable = document.getElementById('l2-setting-table-name').value.trim() || window.ACCESS_IMPORT_CONFIG.defaultTable;
-        tablesList.forEach(t => {
-            const opt = document.createElement('option');
-            opt.value = t;
-            opt.textContent = t;
-            if (t.toUpperCase().includes('ELEMENT_DATA') || t === preferredTable) opt.selected = true;
-            tableSelect.appendChild(opt);
-        });
-        tableSelector.classList.remove('hidden');
-        _l2_log('Logic 2: Loaded multiple CSVs. Select table then click Convert.');
+        _l2_log('Logic 2: Loaded multiple CSVs. Ready to Convert.');
         return;
     }
 
@@ -1793,23 +1774,7 @@ async function _l2_onFileChange(event) {
     if (window.AccessAdapter.isAccessFile(file.name)) {
         _l2_log('Logic 2: Reading Access file: ' + file.name);
         _l2_fileBuffer = await file.arrayBuffer();
-        try {
-            const response = await window.AccessAdapter.readTableNames(_l2_fileBuffer, { name: file.name, size: file.size }, 'l2', (msg) => _l2_log(`Status: ${msg}`));
-            const tablesList = response.tablesList || [];
-            tableSelect.innerHTML = '';
-            const preferredTable = document.getElementById('l2-setting-table-name').value.trim() || window.ACCESS_IMPORT_CONFIG.defaultTable;
-            tablesList.forEach(t => {
-                const opt = document.createElement('option');
-                opt.value = t;
-                opt.textContent = t;
-                if (t === preferredTable) opt.selected = true;
-                tableSelect.appendChild(opt);
-            });
-            tableSelector.classList.remove('hidden');
-            _l2_log('Logic 2: Found ' + tablesList.length + ' table(s). Select table then click Convert.');
-        } catch (e) {
-            _l2_log('ERROR extracting tables: ' + e.message);
-        }
+        _l2_log('Logic 2: ACCDB/MDB file buffered. Ready to Convert.');
     } else if (name.endsWith('.csv')) {
         _l2_log('Logic 2: CSV file selected: ' + file.name);
         _l2_csvText = await file.text();
@@ -1819,7 +1784,6 @@ async function _l2_onFileChange(event) {
             window.AppState.logic2.inputFilename = file.name;
             _l2_log('Logic 2: CSV loaded: ' + rows.length + ' row(s).');
         }
-        tableSelector.classList.add('hidden');
     }
 }
 
@@ -1841,17 +1805,29 @@ async function _l2_onConvertClick() {
         return;
     }
 
-    const tableName = document.getElementById('l2-selected-table').value
-                      || document.getElementById('l2-setting-table-name').value.trim()
+    const tableName = document.getElementById('l2-setting-table-name').value.trim()
                       || window.ACCESS_IMPORT_CONFIG.defaultTable;
 
     if (fileInput.files.length > 1) {
-        if (!window.AppState.logic2.tablesData || !window.AppState.logic2.tablesData[tableName]) {
-            _l2_log(`Logic 2 ERROR: Table ${tableName} not loaded from selected CSVs.`);
+        // Find the first table that has data (or try to find ELEMENT_DATA)
+        let foundTable = null;
+        for (const [tName, data] of Object.entries(window.AppState.logic2.tablesData || {})) {
+            if (tName.toUpperCase().includes('ELEMENT_DATA') || tName === tableName) {
+                foundTable = tName;
+                break;
+            }
+        }
+        if (!foundTable) {
+            const tables = Object.keys(window.AppState.logic2.tablesData || {});
+            if (tables.length > 0) foundTable = tables[0];
+        }
+
+        if (!foundTable || !window.AppState.logic2.tablesData[foundTable]) {
+            _l2_log(`Logic 2 ERROR: No valid data table loaded from selected CSVs.`);
             return;
         }
-        window.AppState.logic2.tableRows = window.AppState.logic2.tablesData[tableName];
-        _l2_log(`Logic 2: Selected ${window.AppState.logic2.tableRows.length} row(s) from "${tableName}" CSV.`);
+        window.AppState.logic2.tableRows = window.AppState.logic2.tablesData[foundTable];
+        _l2_log(`Logic 2: Selected ${window.AppState.logic2.tableRows.length} row(s) from "${foundTable}" CSV.`);
     } else {
         const file = fileInput.files[0];
         const name = file.name.toLowerCase();
@@ -2453,7 +2429,8 @@ from js import document, Blob, window, Uint8Array, URL
 from pyodide.ffi import create_proxy
 
 # --- CII Tools (Logic 3 round-trip) imports ---
-from serializer import CIIParser, ParserSettings, ParseContext, CIISerializer, SerializerSettings
+from parser import CIIParser, ParserSettings, ParseContext
+from Logic2_serializer import CIISerializer, SerializerSettings
 from optimizer import reconstruct_from_csv
 
 # --- Logic 2 imports ---
