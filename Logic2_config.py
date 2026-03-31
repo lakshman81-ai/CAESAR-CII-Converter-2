@@ -4,8 +4,8 @@
 CAESAR_CALCULATED_FLAG = -1.01010000705719
 
 def get_sentinel():
-    import js
     try:
+        import js
         # Check if the UI has provided an explicit sentinel configuration
         # For simplicity, if we add an l2-setting-sentinel, we read it, else use default.
         ui_val = js.document.getElementById('l2-setting-sentinel').value

@@ -37,8 +37,8 @@ def build_hybrid_cii(
     base_parsed_data: Optional[Dict] = None,
     use_dos_newlines: bool = True
 ) -> str:
-    import js
     try:
+        import js
         sentinel_val = float(js.document.getElementById('l4-setting-sentinel').value)
     except:
         sentinel_val = -1.0101
