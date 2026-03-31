@@ -41,6 +41,41 @@
             }
         };
 
+        const CAESAR_COLS = {
+            from:    ['FROM_NODE', 'FROM', 'FROMNODE', 'NODE_FROM', 'NODEFROM', 'FNODE'],
+            to:      ['TO_NODE',   'TO',   'TONODE',   'NODE_TO',   'NODETO',   'TNODE'],
+            dx:      ['DELTA_X',   'DX',   'DELTAX',   'D_X',  'LENGTH_X', 'X'],
+            dy:      ['DELTA_Y',   'DY',   'DELTAY',   'D_Y',  'LENGTH_Y', 'Y'],
+            dz:      ['DELTA_Z',   'DZ',   'DELTAZ',   'D_Z',  'LENGTH_Z', 'Z'],
+            od:      ['DIAMETER',  'OD',   'OUTSIDE_DIAMETER', 'PIPE_OD', 'PIPE_DIAMETER'],
+            wall:    ['WALL_THICK','WALL', 'WALLTHICK','THICKNESS', 'WALL_THICKNESS', 'WT'],
+            insul:   ['INSUL_THICK','INSULATION','INSUL','INSUL_THICKNESS'],
+            T1:      ['TEMP_EXP_C1','TEMPERATURE1','TEMP1','T1','OPER_TEMP','DESIGN_TEMP'],
+            P1:      ['PRESSURE1', 'PRESSURE','P1','OPER_PRESSURE','DESIGN_PRESSURE'],
+            density: ['PIPE_DENSITY','DENSITY','MATERIAL_DENSITY'],
+            matName: ['MATERIAL_NAME','MATERIAL','MAT_NAME','MATERIAL_NUM'],
+        };
+
+        function matchCol(colNames, key) {
+            const upper = colNames.map(c => c.toUpperCase());
+            const patterns = CAESAR_COLS[key] ?? [];
+            for (const pat of patterns) {
+                const i = upper.indexOf(pat.toUpperCase());
+                if (i >= 0) return colNames[i];
+            }
+            for (const pat of patterns) {
+                const i = upper.findIndex(c => c.includes(pat.toUpperCase()));
+                if (i >= 0) return colNames[i];
+            }
+            return null;
+        }
+
+        function numVal(row, col, fallback = 0) {
+            if (!col) return fallback;
+            const v = parseFloat(row[col]);
+            return isFinite(v) ? v : fallback;
+        }
+
         window.CSVAdapter = {
             parse(text) {
                 const lines = text.split(/\r?\n/).filter(l => l.trim() !== '');
@@ -275,6 +310,88 @@
                         updateStatus('table resolved');
                         return { tablesData, tablesList: diagBase.availableTables, diag: diagBase };
                     } catch (e) {
+                        // Strategy B: Fuzzy column match (if strict extraction failed or returned 0 rows)
+                        try {
+                            const { Database } = window.mdbReader;
+                            const db = new Database(window.Buffer.from(fileBuffer));
+                            const tableNamesFromDb = db.getTableNames();
+                            for (const tname of tableNamesFromDb) {
+                                try {
+                                    const table = db.getTable(tname);
+                                    const cols = table.getColumnNames();
+
+                                    const fromCol = matchCol(cols, 'from');
+                                    const toCol   = matchCol(cols, 'to');
+                                    const odCol   = matchCol(cols, 'od');
+                                    const dxCol   = matchCol(cols, 'dx');
+                                    const dyCol   = matchCol(cols, 'dy');
+                                    const dzCol   = matchCol(cols, 'dz');
+
+                                    if (!fromCol || !toCol || (!odCol && !dxCol)) continue;
+
+                                    const wallCol  = matchCol(cols, 'wall');
+                                    const insulCol = matchCol(cols, 'insul');
+                                    const t1Col    = matchCol(cols, 'T1');
+                                    const p1Col    = matchCol(cols, 'P1');
+                                    const densCol  = matchCol(cols, 'density');
+                                    const matCol   = matchCol(cols, 'matName');
+
+                                    const rows = table.getData();
+                                    const extractedRows = [];
+
+                                    let pOd = 0, pWall = 0, pInsul = 0, pT1 = 0, pP1 = 0, pDens = 7.833e-3, pMat = 'CS';
+
+                                    for (let i = 0; i < rows.length; i++) {
+                                        const row = rows[i];
+                                        const from = parseInt(row[fromCol]) || 0;
+                                        const to   = parseInt(row[toCol])   || 0;
+                                        if (!from || !to || from === to) continue;
+
+                                        const dx = numVal(row, dxCol);
+                                        const dy = numVal(row, dyCol);
+                                        const dz = numVal(row, dzCol);
+
+                                        const rawOd = numVal(row, odCol);
+                                        const od    = rawOd > 0 ? rawOd : pOd;
+
+                                        const wall     = numVal(row, wallCol,  pWall)  || pWall;
+                                        const insul    = numVal(row, insulCol, pInsul) || pInsul;
+                                        const T1       = numVal(row, t1Col,    pT1)    || pT1;
+                                        const P1       = numVal(row, p1Col,    pP1)    || pP1;
+                                        const density  = numVal(row, densCol,  pDens)  || pDens;
+                                        const material = (matCol && row[matCol]) ? String(row[matCol]).trim() : pMat;
+
+                                        pOd = od || pOd;  pWall = wall || pWall;  pInsul = insul || pInsul;
+                                        pT1  = T1 || pT1; pP1   = P1  || pP1;    pDens  = density || pDens;
+                                        pMat = material || pMat;
+
+                                        extractedRows.push({
+                                            'FROM_NODE': from, 'TO_NODE': to,
+                                            'DELTA_X': dx, 'DELTA_Y': dy, 'DELTA_Z': dz,
+                                            'DIAMETER': od, 'WALL_THICK': wall, 'INSULATION': insul,
+                                            'TEMP_EXP_C1': T1, 'PRESSURE1': P1,
+                                            'PIPE_DENSITY': density, 'MATERIAL_NAME': material,
+                                            'BEND_PTR': '', 'REST_PTR': '', 'RIGID_PTR': '', 'INT_PTR': ''
+                                        });
+                                    }
+
+                                    if (extractedRows.length > 0) {
+                                        tablesData[window.ACCESS_IMPORT_CONFIG.defaultTable] = extractedRows;
+                                        if (options.tables) {
+                                            for (let tn of options.tables) {
+                                                if (tn !== window.ACCESS_IMPORT_CONFIG.defaultTable) {
+                                                    tablesData[tn] = [];
+                                                }
+                                            }
+                                        }
+                                        window.AccessDiagnostics.emit({ ...diagBase, outcome: 'success', error: null, strategy: 'browser-fuzzy' });
+                                        updateStatus('table resolved via fuzzy match');
+                                        return { tablesData, tablesList: diagBase.availableTables, diag: diagBase };
+                                    }
+                                } catch (fuzzyErr) { }
+                            }
+                        } catch (errWrapper) {}
+
                         // Browser parse failed, prepare for Strategy 2/3
                         const normErr = this.normalizeAccessError(e);
                         diagBase.error = {

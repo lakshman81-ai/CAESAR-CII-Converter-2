@@ -5,8 +5,8 @@ DEFAULT_TEMPERATURE = 70.0
 DEFAULT_PRESSURE = 0.0
 
 def get_sentinel_float():
-    import js
     try:
+        import js
         ui_val = js.document.getElementById('l1-setting-sentinel').value
         if ui_val:
             return float(ui_val)
