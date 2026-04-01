@@ -16,6 +16,31 @@
     </script>
     <!-- Access Import Shared Adapter & Config -->
     <script>
+        window.onerror = function(msg, src, lineno, colno, err) {
+            console.error('JS Global Error:', msg, err);
+            const detail = {
+                ts: new Date().toISOString(),
+                outcome: 'failure',
+                error: {
+                    message: msg,
+                    rawMessage: err ? err.stack || err.message : msg
+                }
+            };
+            document.dispatchEvent(new CustomEvent('ACCESS_DIAGNOSTICS', { detail }));
+        };
+        window.addEventListener('unhandledrejection', function(e) {
+            console.error('JS Unhandled Rejection:', e.reason);
+            const detail = {
+                ts: new Date().toISOString(),
+                outcome: 'failure',
+                error: {
+                    message: e.reason ? e.reason.message || String(e.reason) : 'Unknown unhandled rejection',
+                    rawMessage: e.reason ? e.reason.stack || String(e.reason) : ''
+                }
+            };
+            document.dispatchEvent(new CustomEvent('ACCESS_DIAGNOSTICS', { detail }));
+        });
+
         window.ACCESS_IMPORT_CONFIG = {
             enableServerFallback: true,
             serverUrl: 'http://127.0.0.1:8000/convert_accdb',
@@ -277,6 +302,44 @@
                         const db = new Database(window.Buffer.from(fileBuffer));
                         const availableTables = db.getTableNames();
                         diagBase.availableTables = availableTables;
+
+                        // Strategy A: look for embedded CAESAR II neutral/XML text (from method -1 fallback)
+                        if (!options.tables || options.tables.length === 1) {
+                            let embeddedText = null;
+                            for (const name of availableTables) {
+                                try {
+                                    const table = db.getTable(name);
+                                    const cols = table.getColumnNames();
+                                    const rows = table.getData();
+                                    for (const col of cols) {
+                                        for (const row of rows.slice(0, 10)) {
+                                            const val = row[col];
+                                            if (typeof val === 'string' && val.length > 200) {
+                                                if (/^#\$\s*(VERSION|ELEMENTS|CONTROL)/m.test(val)) {
+                                                    embeddedText = val;
+                                                    break;
+                                                }
+                                                if (val.includes('<CAESARII') || val.includes('<PIPINGMODEL')) {
+                                                    embeddedText = val;
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                        if (embeddedText) break;
+                                    }
+                                } catch (e) {}
+                                if (embeddedText) break;
+                            }
+                            if (embeddedText) {
+                                window.AppState[options.logic].baseCiiText = embeddedText;
+                                diagBase.strategy = 'embedded-text';
+                                diagBase.perf.parseMs = Math.round(performance.now() - startParse);
+                                diagBase.perf.totalMs = Math.round(performance.now() - startTotal);
+                                window.AccessDiagnostics.emit({ ...diagBase, outcome: 'success', error: null });
+                                updateStatus('embedded text resolved');
+                                return { tablesData: {}, tablesList: availableTables, diag: diagBase };
+                            }
+                        }
 
                         const tablesToExtract = options.tables ? options.tables : [options.tableName || window.ACCESS_IMPORT_CONFIG.defaultTable];
 
@@ -1907,12 +1970,21 @@ async function _l1_onFileChange(event) {
         const { tablesData } = await window.CSVAdapter.parseMultiple(files);
 
         let elemTableKey = Object.keys(tablesData).find(k => k.toUpperCase().includes('ELEMENT_DATA')) || Object.keys(tablesData)[0];
+        let bendTableKey = Object.keys(tablesData).find(k => k.toUpperCase().includes('BEND'));
+        let restTableKey = Object.keys(tablesData).find(k => k.toUpperCase().includes('RESTRAINT') || k.toUpperCase() === 'RST_');
+        let rigidTableKey = Object.keys(tablesData).find(k => k.toUpperCase().includes('RIGID'));
+        let sifTableKey = Object.keys(tablesData).find(k => k.toUpperCase().includes('SIF'));
 
         if (tablesData[elemTableKey] && tablesData[elemTableKey].length > 0) {
             window.AppState.logic1.elemRows = tablesData[elemTableKey];
+            if (bendTableKey) window.AppState.logic1.bendRows = tablesData[bendTableKey];
+            if (restTableKey) window.AppState.logic1.restRows = tablesData[restTableKey];
+            if (rigidTableKey) window.AppState.logic1.rigidRows = tablesData[rigidTableKey];
+            if (sifTableKey) window.AppState.logic1.sifRows = tablesData[sifTableKey];
+
             window.AppState.logic1.inputFilename = elemTableKey + '.csv';
             if (statusEl) { statusEl.textContent = `CSV Bundle Loaded: ${window.AppState.logic1.elemRows.length} elements from ${elemTableKey}`; statusEl.classList.remove('hidden'); }
-            _l1_log(`Logic 1: Loaded ${window.AppState.logic1.elemRows.length} elements from multiple files selection`);
+            _l1_log(`Logic 1: Loaded ${window.AppState.logic1.elemRows.length} elements and aux data from multiple files selection`);
         } else {
              _l1_log('Logic 1 ERROR: No valid element data found in uploaded files.');
         }
@@ -1925,11 +1997,16 @@ async function _l1_onFileChange(event) {
     if (window.AccessAdapter.isAccessFile(file.name)) {
         _l1_fileBuffer = await file.arrayBuffer();
         try {
-            const response = await window.AccessAdapter.parseAccessTables(_l1_fileBuffer, { tableName: 'INPUT_BASIC_ELEMENT_DATA' }, { name: file.name, size: file.size }, 'l1', (msg) => {
+            const tableNames = ['INPUT_BASIC_ELEMENT_DATA', 'INPUT_BENDS', 'INPUT_RESTRAINTS', 'INPUT_RIGIDS', 'INPUT_SIFTEES'];
+            const response = await window.AccessAdapter.parseAccessTables(_l1_fileBuffer, { tables: tableNames }, { name: file.name, size: file.size }, 'l1', (msg) => {
                 if (statusEl) { statusEl.textContent = `Status: ${msg}`; statusEl.classList.remove('hidden'); }
                 _l1_log(`Logic 1 Status: ${msg}`);
             });
-            window.AppState.logic1.elemRows = response.tablesData['INPUT_BASIC_ELEMENT_DATA'];
+            window.AppState.logic1.elemRows = response.tablesData['INPUT_BASIC_ELEMENT_DATA'] || [];
+            window.AppState.logic1.bendRows = response.tablesData['INPUT_BENDS'] || [];
+            window.AppState.logic1.restRows = response.tablesData['INPUT_RESTRAINTS'] || [];
+            window.AppState.logic1.rigidRows = response.tablesData['INPUT_RIGIDS'] || [];
+            window.AppState.logic1.sifRows = response.tablesData['INPUT_SIFTEES'] || [];
             window.AppState.logic1.inputFilename = file.name;
             if (statusEl) { statusEl.textContent = 'ACCDB loaded: ' + window.AppState.logic1.elemRows.length + ' elements'; statusEl.classList.remove('hidden'); }
             _l1_log('Logic 1: Loaded ' + window.AppState.logic1.elemRows.length + ' elements from ' + file.name);
@@ -2491,6 +2568,21 @@ def log_status(msg):
     log_el.appendChild(line_div)
     log_el.scrollTop = log_el.scrollHeight
 
+    # Also forward ERRORs to JS error handler to show in console/debug panels
+    if "[ERROR]" in msg:
+        import sys
+        print(msg, file=sys.stderr)
+
+        # Fire diagnostic event to make sure it shows up in UI
+        import js
+        try:
+            err_msg = msg.replace("[ERROR]", "").strip()
+            detail = {"ts": js.Date.new().toISOString(), "outcome": "failure", "error": {"message": err_msg, "rawMessage": msg}}
+            event = js.CustomEvent.new('ACCESS_DIAGNOSTICS', {"detail": detail})
+            js.document.dispatchEvent(event)
+        except Exception:
+            pass
+
 def clear_logs(event):
     document.getElementById("status-logs").innerHTML = ""
 
@@ -2758,14 +2850,27 @@ async def on_l1_convert(event):
         return
 
     try:
-        elem_rows = _js_rows_to_list_of_dicts(js_elem_rows)
+        def _js_to_list(js_obj):
+            if js_obj is None: return None
+            return _js_rows_to_list_of_dicts(js_obj)
+        elem_rows = _js_to_list(js_elem_rows)
+        bend_rows = _js_to_list(window.AppState.logic1.bendRows)
+        rest_rows = _js_to_list(window.AppState.logic1.restRows)
+        rigid_rows = _js_to_list(window.AppState.logic1.rigidRows)
+        sif_rows = _js_to_list(window.AppState.logic1.sifRows)
         log_status(f"Logic 1: {len(elem_rows)} elements loaded.")
     except Exception as e:
         log_status(f"[ERROR] Logic 1: Failed to read rows: {e}")
         return
 
     try:
-        exporter = L1_Exporter.from_tables(elem_rows)
+        exporter = L1_Exporter.from_tables(
+            elem_rows=elem_rows,
+            bend_rows=bend_rows,
+            rest_rows=rest_rows,
+            rigid_rows=rigid_rows,
+            sif_rows=sif_rows
+        )
         cii_text = exporter.export()
         _l1_parsed_data = cii_text  # store for intermediate export
     except Exception as e:
